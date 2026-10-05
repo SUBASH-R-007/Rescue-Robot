@@ -71,11 +71,11 @@ docs/   plan.md algorithm.md architecture.md results.md figures/
 | D8 | **Contradiction** = a sensed `DEBRIS` where the belief held `UNKNOWN` (optimism violated) or `OPEN` (aftershock). `UNKNOWN→OPEN` is not a contradiction. | Prompt §2.5 plus aftershocks. |
 | D9 | Step order in `World.step`: draw outcome → move → aftershock (if any) → sense. Aftershocks target cells **outside the robot's current sensor footprint** (the robot does not witness them), never the robot/survivor cell, never a cell that disconnects robot↔survivor on the true map. The aftershock stream draws `(u_event, permutation)` every step whether or not an event fires. | Belief can go stale (OPEN→DEBRIS), which exercises replanning; draws stay aligned across agents. |
 | D10 | **Unplanned state** = after executing action `a` from `s`, the new position is not among the outcomes the agent's current plan anticipated for `(s, a)`. For AND-OR that is `Results(s,a)` on the planning model; for A\* agents it is the single expected next cell. | Same metric for every agent: A\* agents have one per deviation; AND-OR must have 0. |
-| D11 | "Slips handled" in the summary = slips + skids (non-`arrived` outcomes) the agent survived. Metrics also keep `slips` and `skids` separately. | Matches deck wording. |
+| D11 | "Slips handled" in the summary = slips + skids (non-`arrived` outcomes) the agent survived: all of them except a final one the agent answered by giving up (`Abort("aborted")` as its next decision, i.e. `astar_fixed`'s first deviation). Recorded as `MissionMetrics.slips_handled`; metrics also keep the raw `slips` and `skids`. | Matches deck wording; the slip that made a baseline abort was not handled. |
 | D12 | `Replans` counts re-planning calls **after** the initial plan. | Deck semantics. |
 | D13 | Action iteration order `ACTIONS = (N, E, S, W)`. AND-OR `ORDERED_ACTIONS(s)` sorts by `(bfs_dist(intended target), diag(intended target), index in ACTIONS)` where a blocked intended target counts as `s`, and `diag(p) = abs(abs(goal.r-p.r) - abs(goal.c-p.c))` (stay near the straight line to the goal, like A\*'s cross-product tie-break). | Deterministic and reproduces the deck's root plan (E at (1,1), S at (1,2)). |
 | D14 | Deck root plan: the planner produces `E → {arrived: S-plan, slipped: retry E, skid→(2,1): E-plan}`. The deck's `N-plan` at (2,1) **cannot** come from a distance-ordered planner on that map: going N from (2,1) is never strictly better than going E, because `d(2,2) ≤ 1 + min(d(1,2), d(2,1)) = d(1,1)`. At t=0 the belief is optimistic, so `d(2,2)=4 < d(1,1)=6`. We reproduce the shape and document the one-letter deviation rather than hard-coding it. | Honesty over cosmetics. |
-| D15 | Step budget default `4·R·C`. Depth limit default `R·C` (= no effective cut-off since path states are distinct). | Prompt §2.6, §3. |
+| D15 | Step budget default `4·R·C`. Depth limit default `R·C` (= no effective cut-off since path states are distinct). A strong-cyclic plan reaches the goal with probability 1 only in the limit, so **budget failures of `andor` are possible**, with probability ≈ `p^budget` per mission at worst (e.g. 1×2 corridor, p = 0.4, r = 1: budget 8, ≈ 6.6·10⁻⁴; seed 5582 fails). Negligible on the ≥ 5×5 maps of the tests and experiments; no minimum budget is added, and results must count such failures honestly. | Prompt §2.6, §3. |
 | D16 | Wasted moves = `steps − shortest true-map path length`, recorded only for successful missions (NaN otherwise). | Undefined on failure. |
 | D17 | Venv lives outside OneDrive (`%USERPROFILE%/.venvs/rescue-robot`); README documents a normal `pip install -e .[dev]`. | Avoid syncing ~200 MB of site-packages. |
 
@@ -309,7 +309,8 @@ Decision = Action | Abort
 @dataclass class AgentStats:  replans=0; plans_made=0; planning_ms=0.0; nodes_expanded=0
                               plan_size=0; max_plan_size=0; unplanned_states=0
                               planner_fallbacks=0; contradictions=0
-@dataclass(frozen=True) class AgentUpdate: newly_known; contradictions; replanned: bool; unplanned: bool   # bumps are computed by the runner
+@dataclass(frozen=True) class AgentUpdate: newly_known; contradictions; replanned: bool; unplanned: bool
+                                          triggering_contradictions: tuple[Pos, ...] = ()   # bumps are computed by the runner
 @dataclass(frozen=True) class PlanSnapshot: plan_id: int; t: int; pos: Pos; plan: Plan | None; path: tuple[Pos, ...] | None; envelope: frozenset[Pos]
 class Agent(ABC):
     name: ClassVar[str]
@@ -323,6 +324,15 @@ class Agent(ABC):
     def policy_arrows() -> dict[Pos, Action]                          # for the UI
 ```
 `make_agent(name, transition, planner_config, agent_config)` in `agents/__init__.py`.
+*Clarification (P3 review):* every replan happens in `on_outcome` and is reported in its
+`AgentUpdate` (so `stats.replans == Σ update.replanned`); `choose_action` never plans — a state
+`on_outcome` should have replanned is a logic error (`RuntimeError`). `choose_action` raises
+`RuntimeError` before the first `on_outcome` and on the goal (the mission is over), and
+`ValueError` when `obs.pos` is not the agent's position; `reset` raises `ValueError` when `goal`
+is not `belief.survivor`. `triggering_contradictions` are the contradicted cells that demanded
+the replan (all of them in `eager` mode; in `lazy` mode those in the plan envelope / on the
+remaining A\* path), empty when there was no replan or it had other causes only (deviation,
+unplanned state, missing policy entry).
 
 ### 3.9 Runner
 ```python
@@ -331,26 +341,31 @@ class MissionStatus(Enum): RUNNING, RESCUED, ABORTED, BUDGET, UNREACHABLE
 class StepEvent:
     t; pos; action: Action | None; outcome: OutcomeKind | None; new_pos; blocked; bump
     new_cells: tuple[tuple[Pos, Cell], ...]; contradictions: tuple[Pos, ...]
+    triggering_contradictions: tuple[Pos, ...]          # from AgentUpdate
     replanned: bool; unplanned: bool; plan_id: int; aftershock_cells: tuple[Pos, ...]
     status: MissionStatus; note: str
 @dataclass(frozen=True)
 class MissionMetrics: agent, scenario, seed, rows, cols, slip_p, success, failure_reason (str|None),
-    steps, shortest_path, wasted_moves (float, NaN if failed), replans, slips, skids, bumps,
-    blocked_moves, unplanned_states, cells_explored, planning_ms, nodes_expanded, plan_size,
-    planner_fallbacks, aftershock_events
+    steps, shortest_path, wasted_moves (float, NaN if failed), replans, slips, skids,
+    slips_handled (D11), bumps, blocked_moves, unplanned_states, cells_explored, planning_ms,
+    nodes_expanded, plan_size, planner_fallbacks, aftershock_events
+    def as_dict() -> dict ; @classmethod from_dict(d) -> MissionMetrics   # None floats → NaN
 class Mission:
     def __init__(self, grid, agent, world_config=WorldConfig(), seed=0, scenario="")
     def start() -> StepEvent ; def step() -> StepEvent ; done ; status ; events ; world ; agent
     def metrics() -> MissionMetrics
 def run_mission(grid, agent, world_config, seed, scenario="", on_event=None) -> Mission
 def make_transition(grid, world_config) -> TransitionModel  # TerrainSlip iff grid has '~'
+def check_agent_transition(agent, world_transition, rows, cols) -> None   # D5, ValueError
 def format_trace(events, max_segments=None) -> str
 def format_summary(metrics) -> str
 ```
 Trace: segments `"{fmt(pos)}{note} {action} {label}"` joined by `" → "`, ending with the final
 position; `label ∈ {ok, slip, skid-L, skid-R}` with `" (blocked)"` appended to blocked moves;
 `note = " [debris at (r,c), replanned]"` (comma-joined cells) on the position where a
-contradiction triggered a replan. Summary:
+contradiction triggered a replan: the cells listed are the event's `triggering_contradictions`,
+so a replan caused only by a deviation (or a contradiction lazy mode ignores) is not
+annotated. Summary (`Slips handled` = `slips_handled`, D11):
 ```
 Cells explored: 11   Replans: 2   Slips handled: 3   Collisions: 0
 Rescue successful            | Rescue failed (<reason>)
@@ -390,12 +405,23 @@ contradicted cell is on the remaining path). `anticipated(pos, a)` = {expected n
 **Mission loop.** `start()`: build `World(grid, make_transition(grid, cfg), sensor_radius,
 seed, aftershock)`, a fresh `BeliefMap(rows, cols, survivor)`, `agent.reset(start, survivor,
 belief)`, `agent.on_outcome(start, world.sense())`, emit the t=0 event (`action=None`).
+`Mission.__init__` raises `ValueError` if `agent.transition` differs from
+`make_transition(grid, cfg)` in the slip p of any cell (D5: the agent is given the world's
+dynamics; a mismatch would silently break the andor invariants).
 `step()`: `decision = agent.choose_action(Observation(pos, t))`; an `Abort` ends the mission
 (ABORTED / UNREACHABLE). Otherwise `result = world.step(action)`; `bump = result.hit_debris and
 agent.belief.get(result.target) != DEBRIS` (evaluated **before** `on_outcome`); then
 `agent.on_outcome(result.new_pos, result.percept)`; status RESCUED when on the survivor,
 BUDGET when `world.t ≥ budget`. `blocked_moves` counts blocked outcomes that are not bumps.
 Map seeds and world seeds are independent (`World` uses spawned child streams).
+
+**Run files (`runs.py`).** `save_run(mission, path=None, runs_dir="runs") -> Path` (RuntimeError
+for an unstarted mission; default name `<YYYYmmdd-HHMMSS>_<agent>_<seed>.json`, suffixed
+`-1`, `-2`, … instead of overwriting); `load_run(path) -> RunRecord` (ValueError for another
+format version). `RunRecord`: `grid` (the *initial* true map), `agent`, `seed`, `scenario`,
+the three configs, `events: list[StepEvent]`, `metrics: MissionMetrics` (NaN restored), and
+`snapshots` as JSON dicts (`plan_id`, `t`, `pos`, `pretty`, `policy`, `path`, `envelope`,
+`tree`). Events and metrics round-trip exactly.
 
 **Demo (`python -m rescue.demo`).** Prints a header, the initial root plan (`Plan.pretty()`),
 the full trace and the summary for `maps/deck_demo.txt` with `config.DEMO_SEED`, chosen so the

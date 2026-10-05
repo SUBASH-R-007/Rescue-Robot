@@ -30,8 +30,20 @@ PROB_EPS: float = 1e-12
 # --- Sensing and mission ----------------------------------------------------------------
 #: Manhattan radius of the robot's sensor (1 = 4-neighbours).
 DEFAULT_SENSOR_RADIUS: int = 1
-#: Step budget = STEP_BUDGET_FACTOR * rows * cols.
+#: Step budget = STEP_BUDGET_FACTOR * rows * cols. Strong-cyclic plans succeed with probability
+#: 1 only without a budget: a mission that keeps slipping can run out of it (worst case about
+#: ``p ** budget``, e.g. ≈ 6.6e-4 on a 1x2 corridor at p = 0.4), see docs/plan.md D15.
 STEP_BUDGET_FACTOR: int = 4
+
+# --- Demo -------------------------------------------------------------------------------
+#: World seed of ``python -m rescue.demo`` (andor, ``maps/deck_demo.txt``, p = 0.2, r = 1,
+#: eager). Found by searching seeds 0..20000 for missions whose trace starts ``(1,1) E ok →
+#: (1,2) S slip → (1,2) S ok → (2,2) [debris at (3,2), replanned]`` and ends in a rescue
+#: (docs/plan.md §3.10): 1,948 match. Among them, the smallest seed with the deck-like summary
+#: ``Replans: 2   Slips handled: 3   Collisions: 0`` (the deck's maximum of 3 handled slips),
+#: fewest cells explored, then fewest steps. It explores 12 cells in 9 steps. The deck's
+#: "Cells explored: 11" is not reachable: no matching seed explores fewer than 12.
+DEMO_SEED: int = 76
 
 # --- Map generation ---------------------------------------------------------------------
 #: Regeneration attempts before a generator gives up on producing a solvable map.
