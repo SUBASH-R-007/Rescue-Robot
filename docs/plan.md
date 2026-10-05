@@ -241,7 +241,7 @@ class Plan:
     def envelope() -> frozenset[Pos]              # every state appearing anywhere (incl. goal)
     def pretty() -> str                           # deck one-liner for the root, see below
     def pretty_node(node, parent_state) -> str    # used by UI
-    def to_tree(depth: int) -> dict               # nested {"state","kind","action","label","children"}
+    def to_tree(depth: int) -> dict               # nested {"state","kind","action","edge","text","children"} (§3.10)
     def stats() -> PlanStats
 def branch_label(parent: Pos, br: Branch) -> str  # "arrived" | "slipped" | "blocked" | "skid→(r,c)"
 def plan_from_policy(policy, model, start) -> Plan   # unfold a policy into Act/Loop/Ref (fallback)
@@ -251,6 +251,11 @@ Pretty format, root only: `"{a} → {{{label}: {target}, ...}}"` with branch lab
 else ARRIVED in labels → `"arrived"`; else `"skid→(r,c)"`. Targets: `Goal` → `"goal"`;
 `Loop(parent)` → `"retry {a}"`; `Loop(other)` → `"↺(r,c)"`; `Act(b)` → `"{b}-plan"`;
 `Ref(t)` → `"{policy[t]}-plan"`. Separator `", "`.
+*Clarification (P2):* `to_tree` dicts carry the §3.10 keys; `label` is kept as an alias of
+`edge`. `Plan` equality/hash are structural but computed iteratively (plans can be hundreds of
+Act levels deep), and its repr is the short `Plan(start=…, goal=…, root='<pretty>')`. `Act` and
+`Branch` likewise define iterative structural `==`/`hash`, a one-level repr, and pickle/deepcopy
+through a flat pre-order encoding (no recursion anywhere, P2 review).
 
 ### 3.7 Planners
 ```python
@@ -282,6 +287,19 @@ def is_strong_cyclic(policy, model, start) -> bool
 def strong_cyclic_policy(model, start) -> dict[Pos, Action] | None
 def winning_region(model) -> frozenset[Pos]
 ```
+*Clarification (P2 review):* `AndOrPlanner` stats: `time_ms` covers the whole call (search,
+validation, fallback); `plan_size` is the returned plan's number of states with an action (0 when
+no plan is returned); `fallback_used` means the returned plan came from the reference;
+`validated` is None when validation is off or no plan was produced, else True iff every plan
+produced in the call (AND-OR's and, if used, the fallback's) passed `is_strong_cyclic`. With
+`validate` an invalid plan is never returned. The fallback's reachability check runs only when
+a fallback is considered. `AndOrSearch.run` is thread-safe (reference-counted recursion-limit
+raise). `strong_cyclic_policy` picks, among progressing pairs, the action whose `arrived`
+outcome is in the lowest layer (then any progressing pair, then N, E, S, W).
+*Clarification (P2):* `ValidationReport.dead` ⊇ `missing` (a state with no action has no
+successors, so it cannot reach the goal). A\* `nodes_expanded` counts nodes closed and expanded;
+popping the goal ends the search uncounted, so `start == goal` and blocked/off-grid endpoints
+give 0.
 
 ### 3.8 Agents (`agents/base.py`)
 ```python
@@ -291,7 +309,7 @@ Decision = Action | Abort
 @dataclass class AgentStats:  replans=0; plans_made=0; planning_ms=0.0; nodes_expanded=0
                               plan_size=0; max_plan_size=0; unplanned_states=0
                               planner_fallbacks=0; contradictions=0
-@dataclass(frozen=True) class AgentUpdate: newly_known; contradictions; replanned: bool; unplanned: bool; bumped_cells
+@dataclass(frozen=True) class AgentUpdate: newly_known; contradictions; replanned: bool; unplanned: bool   # bumps are computed by the runner
 @dataclass(frozen=True) class PlanSnapshot: plan_id: int; t: int; pos: Pos; plan: Plan | None; path: tuple[Pos, ...] | None; envelope: frozenset[Pos]
 class Agent(ABC):
     name: ClassVar[str]
@@ -346,6 +364,8 @@ from the parent, None at the root), `text` (display string, 1-indexed, e.g. `"E 
 `"goal (4,4)"`, `"↺ retry E"`, `"↺ (1,1)"`, `"→ S-plan @ (2,1)"`) and `children` (list). Act
 nodes deeper than `depth` become `kind="truncated"` with no children. `PlanStats.depth` =
 max number of Act nodes on a root-to-leaf path; `nodes` counts every node incl. leaves.
+*Clarification (P2):* Act depth counts the root Act as 1, so `to_tree(stats().depth)` is the
+full tree and `to_tree(0)` truncates the root; a truncated node keeps its `action`.
 
 **ContingencyAgent (`andor`).** `on_outcome(new_pos, percept)`: update belief; if a previous
 action exists and `new_pos ∉ anticipated(prev, a)` → `unplanned_states += 1`, log a warning.
@@ -382,6 +402,69 @@ the full trace and the summary for `maps/deck_demo.txt` with `config.DEMO_SEED`,
 trace starts `(1,1) E ok → (1,2) S slip → (1,2) S ok → (2,2) [debris at (3,2), replanned]` and
 ends in a rescue.
 
+### 3.11 Visualisation (`viz/`, Phase 4–5)
+
+The UI only renders state and forwards key presses; all behaviour comes from `Mission` /
+`StepEvent`s. Every module must work under `SDL_VIDEODRIVER=dummy`.
+
+```python
+# theme.py — all UI constants (sizes, speeds, alphas, durations) live here, not in logic
+@dataclass(frozen=True) class Palette: background, panel_bg, text, text_dim, grid_line, unknown,
+    unknown_glyph, open, debris, debris_glyph, high_slip, survivor, robot, start, arrow, envelope,
+    trace_ok, trace_slip, trace_skid, replan_flash, highlight, badge: dict[MissionStatus, RGB],
+    agent: dict[str, RGB]
+DEFAULT_PALETTE, HIGH_CONTRAST_PALETTE
+WINDOW_SIZE = (1280, 800); PANEL_WIDTH; TARGET_FPS = 60; TRUE_MAP_ALPHA = round(0.35 * 255)
+SPEEDS = (0.5, 1, 2, 4, 8, 16, 32)  # steps per second; DEFAULT_SPEED_INDEX
+REPLAN_FLASH_MS; LOG_CAPACITY; SLIP_P_STEP = 0.05
+def load_fonts() -> Fonts      # SysFont with Unicode-capable fallbacks (Segoe UI, DejaVu Sans)
+
+# grid_view.py
+@dataclass(frozen=True) class TraceMark: pos; new_pos; action; outcome: OutcomeKind; blocked: bool
+@dataclass class GridScene: rows; cols; belief (int8 array or None = show truth); true_cells;
+    high_slip; robot; start; survivor; show_true: bool; show_policy: bool;
+    policy: Mapping[Pos, Action]; envelope: frozenset[Pos]; trace: Sequence[TraceMark];
+    flash_cells: Sequence[Pos]; flash_alpha: float (0..1); editor: bool
+class GridView: __init__(rect, palette, fonts); cell_rect(p) -> Rect; pos_at(xy) -> Pos | None;
+    draw(surface, scene)
+    # glyphs, not just colour: unknown = dark + "?", debris = cross-hatch, '~' = wave lines,
+    # survivor = cross, robot = filled circle, start = "S"; arrived = green segment,
+    # slipped = amber ring, skid = red arrow (red × when blocked); policy = small arrows.
+
+# tree_view.py
+class TreeView: __init__(rect, palette, fonts); set_plan(plan | None, current: Pos | None,
+    max_depth=6); draw(surface); handle_event(event) -> bool   # click collapses, wheel scrolls
+    # rows: "E @ (1,1)", "arrived → S @ (1,2)", "slipped → ↺ retry E", "skid→(2,1) → E-plan"
+
+# panel.py
+class EventLog: add(text, kind="info"); lines
+@dataclass class PanelInfo: title; agent; status: MissionStatus; seed; slip_p; scenario;
+    metrics: Mapping[str, str]; speed: float; paused: bool; recording: bool
+class Panel: __init__(rect, palette, fonts); draw(surface, info, log, tree: TreeView)
+def draw_help_overlay(surface, palette, fonts, lines)
+def draw_badge(surface, rect, status, palette, fonts)
+
+# record.py
+class Recorder: start(path, fps); add_frame(surface); stop() -> Path | None; active
+    # GIF via imageio; MP4 via imageio-ffmpeg when the suffix is .mp4
+
+# export.py
+def export_plan_tree(plan, path, max_depth=5, title=None) -> Path   # matplotlib, no Graphviz
+
+# sim_app.py / replay_app.py / compare_app.py
+@dataclass(frozen=True) class SimOptions: map_path | None; scenario | None; rows; cols; seed;
+    agent; slip_p; sensor_radius; replan_mode; aftershock_q; aftershock_k; high_contrast;
+    headless; frames; screenshot | None; record | None; autoplay
+class SimApp: __init__(options); run() -> int; handle_key(key, mods); tick(dt_ms); render()
+class ReplayApp: __init__(record: RunRecord, ...); same loop; ←/→ scrub, Home/End, Space
+class CompareApp: three Missions (AGENT_NAMES) on the same grid + seed, stepped in lock-step;
+    per-pane GridView + badge (RUNNING / RESCUED / ABORTED / BUDGET)
+```
+
+Controls are exactly docs/brief.md §6.1 plus `C` (high-contrast palette) and `Esc` (quit).
+`M` cycles `maps/*.txt` and, once Phase 5 lands, the `mapgen.SCENARIOS` generators.
+Headless use: `python -m rescue.sim --headless --frames 100 --screenshot out.png`.
+
 ---
 
 ## 4. AND-OR algorithm sketch (see docs/algorithm.md for the proof)
@@ -416,10 +499,11 @@ HAS_PROGRESS(s, path):  in the provisional policy graph (solved table + s),
     States that reach the goal are cached as grounded (also journaled).
 ```
 `HAS_PROGRESS` generalises the prompt's syntactic rule (“not only Loop labels”) to the AIMA
-condition “a leaf is reachable from every point in the plan”. The syntactic rule is both
-unsound (two states looping into each other both look like progress) and incomplete (a
-dead-end alcove whose only exit is back to its parent is rejected). The wall-bump regression
-(action whose only outcome is “stay”) is rejected by both. Rollback fixes the other classic
+condition “a leaf is reachable from every point in the plan”. With a transactional table the
+literal syntactic rule is sound but incomplete (a dead-end alcove whose only exit is back to
+its parent is rejected); relaxing it so a Loop to an ancestor counts as progress fixes the
+alcove but is unsound (two states looping into each other). The wall-bump regression (action
+whose only outcome is “stay”) is rejected by all three rules (docs/algorithm.md §5). Rollback fixes the other classic
 caching bug: a state solved with a Loop to an ancestor that later fails.
 
 ---
