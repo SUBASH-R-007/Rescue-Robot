@@ -1,0 +1,37 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+
+# Tooling caches
+.pytest_cache/
+.ruff_cache/
+.hypothesis/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Simulation outputs
+runs/
+recordings/
+*.mp4
+
+# Experiment outputs: only the final summary, hypotheses and plots are committed
+results/*
+!results/summary.csv
+!results/HYPOTHESES.md
+!results/plots/
+results/plots/*
+!results/plots/*.png

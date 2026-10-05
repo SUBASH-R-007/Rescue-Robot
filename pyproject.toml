@@ -1,0 +1,77 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "rescue-robot"
+version = "0.1.0"
+description = "Rescue Robot Navigation System: AND-OR contingency planning under nondeterministic actions and a partially known map (CS23533 mini project)"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [
+  { name = "Srithan Saravanan" },
+  { name = "Subash R" },
+]
+dependencies = [
+  "numpy>=1.26",
+  "pyyaml>=6.0",
+  "matplotlib>=3.8",
+  "scipy>=1.11",
+  "pygame-ce>=2.4",
+  "imageio>=2.31",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=7.4",
+  "pytest-cov>=4.1",
+  "pytest-xdist>=3.5",
+  "hypothesis>=6.90",
+  "ruff>=0.5",
+]
+video = ["imageio-ffmpeg>=0.4"]
+
+[project.scripts]
+rescue-demo = "rescue.demo:main"
+rescue-sim = "rescue.sim:main"
+rescue-compare = "rescue.compare:main"
+rescue-replay = "rescue.replay:main"
+rescue-experiments = "rescue.experiments.__main__:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
+markers = [
+  "slow: long-running statistical or Monte Carlo tests",
+  "viz: tests that need pygame (run headless with SDL_VIDEODRIVER=dummy)",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "SIM", "RUF"]
+# Arrows (→, ↺) and other Unicode glyphs are intentional in traces and plan labels.
+ignore = ["RUF001", "RUF002", "RUF003"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["B011"]
+
+[tool.coverage.run]
+source = ["rescue"]
+omit = ["*/rescue/viz/*"]
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = true
+exclude_lines = [
+  "pragma: no cover",
+  "if __name__ == .__main__.:",
+  "raise NotImplementedError",
+]

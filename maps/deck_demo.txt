@@ -1,0 +1,7 @@
+; deck_demo: reproduces the slide 9 sample run (4x4, 1-indexed coordinates in comments).
+; Start (1,1), survivor (4,4). Debris at (3,2) (seen only from (2,2)) and (4,3).
+; (2,1) is open, so an E-skid from (1,1) lands there.
+S...
+....
+.#..
+..#P
