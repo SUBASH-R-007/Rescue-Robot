@@ -6,11 +6,26 @@ never fails because an unrelated module is missing.
 
 from __future__ import annotations
 
+import os
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
 import pytest
+
+#: BLAS / OpenMP thread-pool caps, set before any test module imports numpy or scipy. Their
+#: bundled OpenBLAS copies commit about 0.6 GB each per process on a 20-thread CPU, so with
+#: ``pytest -n auto`` (one worker per CPU; workers inherit this process's environment) the
+#: workers could exhaust the Windows commit limit and crash while importing ("DLL load failed
+#: ... The paging file is too small"). With one thread a worker commits under 0.1 GB; the suite
+#: does no heavy linear algebra. Values already set in the environment are kept.
+BLAS_THREAD_LIMITS: dict[str, str] = {
+    "OPENBLAS_NUM_THREADS": "1",
+    "OMP_NUM_THREADS": "1",
+    "MKL_NUM_THREADS": "1",
+}
+for _name, _value in BLAS_THREAD_LIMITS.items():
+    os.environ.setdefault(_name, _value)
 
 #: Repository root, computed from this file's location (tests/conftest.py).
 REPO_ROOT: Path = Path(__file__).resolve().parent.parent
