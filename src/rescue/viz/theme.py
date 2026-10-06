@@ -412,10 +412,14 @@ DEFAULT_PALETTE = Palette(
         MissionStatus.BUDGET: (150, 88, 0),
         MissionStatus.UNREACHABLE: (112, 70, 170),
     },
+    # Same five hexes as the report plots (rescue.experiments.plots.AGENT_STYLE):
+    # #2a78d6, #eb6834, #1baf7a, #eda100, #e87ba4.
     agent={
-        "andor": (72, 200, 160),
-        "astar_fixed": (240, 138, 60),
-        "astar_replan": (176, 122, 240),
+        "andor": (42, 120, 214),
+        "astar_fixed": (235, 104, 52),
+        "astar_replan": (27, 175, 122),
+        "dstar_lite": (237, 161, 0),
+        "vi_expected": (232, 123, 164),
     },
 )
 

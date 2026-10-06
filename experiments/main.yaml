@@ -1,0 +1,50 @@
+# Full Monte Carlo experiment (brief §6.6): python -m rescue.experiments --config experiments/main.yaml
+#
+# Every task = one seeded map; every agent listed runs on it with the same world seed. The seed
+# depends only on (base_seed, scenario, size, replicate), so maps and outcome streams are shared
+# across slip p, sensor radius, replan mode, aftershock q and agents (common random numbers).
+# Keys per block: name, scenarios, sizes (square), slip_p, and optionally sensor_radius,
+# replan_mode, aftershock_q, aftershock_k, agents, n_maps (the last two default to the top level).
+name: main
+base_seed: 2026
+n_maps: 200
+agents: [andor, astar_fixed, astar_replan, dstar_lite, vi_expected]
+workers: null          # null = CPUs - 2
+
+blocks:
+  # Main result: success / steps / wasted moves / replans vs slip p (H1, H3, H4, H5, H6).
+  - name: slip_sweep
+    scenarios: [random_rubble, collapsed_building, flooded_zone, maze_corridors]
+    sizes: [10, 15, 20]
+    slip_p: [0.0, 0.1, 0.2, 0.3, 0.4]
+
+  # Stress: aftershocks drop k debris cells outside the sensor footprint with probability q.
+  - name: aftershocks
+    scenarios: [random_rubble, collapsed_building]
+    sizes: [15]
+    slip_p: [0.2]
+    aftershock_q: [0.0, 0.05, 0.1, 0.2]
+    aftershock_k: 2
+
+  # Sensor range r = 1 vs 2.
+  - name: sensor_range
+    scenarios: [random_rubble, maze_corridors]
+    sizes: [15]
+    slip_p: [0.2]
+    sensor_radius: [1, 2]
+
+  # Eager vs lazy replanning (only agents with a replan trigger).
+  - name: replan_mode
+    scenarios: [random_rubble, collapsed_building]
+    sizes: [15]
+    slip_p: [0.2]
+    replan_mode: [eager, lazy]
+    agents: [andor, astar_replan, dstar_lite]
+
+  # Planning time vs grid size.
+  - name: scaling
+    scenarios: [random_rubble]
+    sizes: [10, 15, 20, 25, 30]
+    slip_p: [0.2]
+    agents: [andor, astar_replan, dstar_lite, vi_expected]
+    n_maps: 50

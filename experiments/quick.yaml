@@ -1,0 +1,41 @@
+# Quick smoke run (< 60 s incl. plots): python -m rescue.experiments --quick
+# Same blocks as main.yaml with N = 20 maps and one size (10x10); the scaling block keeps two
+# sizes (10, 15) with 5 maps. Writes to results/quick/ so it never overwrites the full results.
+name: quick
+base_seed: 2026
+n_maps: 20
+agents: [andor, astar_fixed, astar_replan, dstar_lite, vi_expected]
+workers: null          # null = CPUs - 2
+
+blocks:
+  - name: slip_sweep
+    scenarios: [random_rubble, collapsed_building, flooded_zone, maze_corridors]
+    sizes: [10]
+    slip_p: [0.0, 0.1, 0.2, 0.3, 0.4]
+
+  - name: aftershocks
+    scenarios: [random_rubble, collapsed_building]
+    sizes: [10]
+    slip_p: [0.2]
+    aftershock_q: [0.0, 0.05, 0.1, 0.2]
+    aftershock_k: 2
+
+  - name: sensor_range
+    scenarios: [random_rubble, maze_corridors]
+    sizes: [10]
+    slip_p: [0.2]
+    sensor_radius: [1, 2]
+
+  - name: replan_mode
+    scenarios: [random_rubble, collapsed_building]
+    sizes: [10]
+    slip_p: [0.2]
+    replan_mode: [eager, lazy]
+    agents: [andor, astar_replan, dstar_lite]
+
+  - name: scaling
+    scenarios: [random_rubble]
+    sizes: [10, 15]
+    slip_p: [0.2]
+    agents: [andor, astar_replan, dstar_lite, vi_expected]
+    n_maps: 5

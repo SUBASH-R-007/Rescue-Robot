@@ -28,10 +28,15 @@ runs/
 recordings/
 *.mp4
 
-# Experiment outputs: only the final summary, hypotheses and plots are committed
+# Experiment outputs (python -m rescue.experiments): the full run's raw.csv (~10 MB),
+# summary, hypotheses, run metadata and plots are committed so every reported number comes
+# from a committed CSV. Everything else under results/ is ignored, including results/quick/
+# (the --quick smoke run) and *.tmp files.
 results/*
+!results/raw.csv
 !results/summary.csv
 !results/HYPOTHESES.md
+!results/run_meta.json
 !results/plots/
 results/plots/*
 !results/plots/*.png
