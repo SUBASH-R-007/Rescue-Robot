@@ -717,8 +717,13 @@ PAIRED_METRICS: tuple[_Paired, ...] = (
 
 SUCCESS_CI_TEXT: str = "error bars: Wilson 95% CI"
 MEAN_CI_TEXT: str = "error bars: Student-t 95% CI of the mean"
-MARGINAL_CI_TEXT: str = ("CIs are per-agent marginal (unpaired); paired tests on identical tasks "
-                         "are in HYPOTHESES.md")
+#: Caveat of the factor figures (sensor radius, replan mode): their error bars are unpaired.
+#: ``HYPOTHESES.md`` tests neither factor; the paired comparisons on identical tasks are in the
+#: results chapter, whose section is filled in per figure.
+MARGINAL_CI_TEXT: str = ("CIs are per-agent marginal (unpaired); paired comparisons on identical "
+                         "tasks are in docs/results.md {section}")
+SENSOR_PAIRED_SECTION: str = "§3.7"
+MODE_PAIRED_SECTION: str = "§3.8"
 P_LABEL: str = "slip probability p"
 Q_LABEL: str = "aftershock probability q (per step)"
 SUCCESS_LABEL: str = "missions rescued (%)"
@@ -972,12 +977,14 @@ def _plot_factor(
     xlabel: str,
     tick: Callable[[Any], str],
     connect: bool,
+    paired_section: str,
 ) -> Path | None:
     """Per scenario, three panels (success %, steps of successful missions, replans) vs one
     factor.
 
     One row of panels per scenario, so the intervals do not mix scenarios with very different
-    path lengths. Separate panels with their own labelled y axes - never a dual axis.
+    path lengths. Separate panels with their own labelled y axes - never a dual axis. The
+    caption names ``paired_section`` of ``docs/results.md``, where the paired comparisons are.
     """
     block = _select_block(rows, block_rule)
     if not block:
@@ -1025,7 +1032,8 @@ def _plot_factor(
                    "(replans then mostly reflect missions abandoned early)"
                    if merged.hollow else "")
     subtitle = (f"{_n_text(counts, 'missions per agent and point')}; error bars: Wilson 95% CI "
-                f"(success), Student-t 95% CI (means); {MARGINAL_CI_TEXT}; "
+                f"(success), Student-t 95% CI (means); "
+                f"{MARGINAL_CI_TEXT.format(section=paired_section)}; "
                 f"{_pooled_text(block, factor)}{steps_note}{hollow_note}")
     return _finish(fig, axes, title, subtitle, shown, xlabel, None, out_dir / file,
                    connect=connect, hollow=merged.hollow)
@@ -1035,13 +1043,15 @@ def plot_sensor_radius(rows: Sequence[Row], out_dir: Path) -> Path | None:
     """Sensor-radius block: success, steps and replans for each radius (if present)."""
     return _plot_factor(rows, out_dir, SENSOR_BLOCK, "sensor_radius.png",
                         "Effect of the sensor radius", "sensor radius r (Manhattan, cells)",
-                        lambda v: f"r = {v}", connect=True)
+                        lambda v: f"r = {v}", connect=True,
+                        paired_section=SENSOR_PAIRED_SECTION)
 
 
 def plot_replan_mode(rows: Sequence[Row], out_dir: Path) -> Path | None:
     """Replan-mode block: success, steps and replans for eager vs lazy (if present)."""
     return _plot_factor(rows, out_dir, MODE_BLOCK, "replan_mode.png",
-                        "Eager vs lazy replanning", "replan mode", str, connect=False)
+                        "Eager vs lazy replanning", "replan mode", str, connect=False,
+                        paired_section=MODE_PAIRED_SECTION)
 
 
 #: File of the H7 tie-break ablation figure, and its panel titles keyed by comparison name.

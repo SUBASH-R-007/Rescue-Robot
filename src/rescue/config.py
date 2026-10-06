@@ -306,8 +306,9 @@ FLOOD_CROSSING_START_TRIES: int = 12
 COMPARE_MAX_PANE_ROWS: int = 2
 
 # --- Experiments: tie-break ablation (H7, docs/plan.md D21) ----------------------------------
-#: Equivalence margin (wasted moves per mission) of H7's ❌ rule, fixed a priori (before the
-#: full ablation run): H7 is refuted when either matched 95 % CI lies above 0, or when both
+#: Equivalence margin (wasted moves per mission) of H7's ❌ rule. Not pre-registered: chosen
+#: while the ablation was tried on quick runs, before the final full run (docs/plan.md D21).
+#: H7 is refuted when either matched 95 % CI lies above 0, or when both
 #: lie entirely inside [-margin, +margin] (equivalence, TOST-style: "no advantage once
 #: tie-breaking is matched"). Half a move: below the smallest per-mission difference (one move)
 #: and about a sixth of H3's full-run gap. A CI that contains 0 but is wider than the margin is

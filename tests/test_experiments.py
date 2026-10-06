@@ -1128,6 +1128,34 @@ def test_make_all_plots_skips_missing_blocks(tmp_path: Path) -> None:
     assert plots.make_all_plots([], tmp_path / "empty" / "plots") == []
 
 
+def test_factor_plot_captions_name_where_the_paired_comparisons_are(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The sensor-radius / replan-mode error bars are unpaired. HYPOTHESES.md tests neither
+    factor, so the caption must point at the results chapter's paired tables instead."""
+    subtitles: dict[str, str] = {}
+    real_finish = plots._finish
+
+    def spy(fig: Any, axes: Any, title: str, subtitle: str, *args: Any, **kwargs: Any) -> Path:
+        path = real_finish(fig, axes, title, subtitle, *args, **kwargs)
+        subtitles[path.name] = subtitle
+        return path
+
+    monkeypatch.setattr(plots, "_finish", spy)
+    rows = _plot_rows(with_blocks=True)
+    assert plots.plot_sensor_radius(rows, tmp_path) is not None
+    assert plots.plot_replan_mode(rows, tmp_path) is not None
+    expected = {
+        "sensor_radius.png": "docs/results.md §3.7",
+        "replan_mode.png": "docs/results.md §3.8",
+    }
+    assert set(subtitles) == set(expected)
+    for name, reference in expected.items():
+        assert "unpaired" in subtitles[name], name
+        assert reference in subtitles[name], name
+        assert "HYPOTHESES.md" not in subtitles[name], name
+
+
 # --- CLI -----------------------------------------------------------------------------------------
 
 

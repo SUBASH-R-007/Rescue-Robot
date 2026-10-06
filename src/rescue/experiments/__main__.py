@@ -80,11 +80,13 @@ def _truthy(value: Any) -> bool:
 def console_summary(rows: Sequence[dict[str, Any]], wall_s: float) -> str:
     """Success % of the main agents at each slip p (slip-sweep block, all sizes and scenarios
     pooled) plus the run size and wall time."""
-    sweep = [r for r in rows if r.get("experiment") == SLIP_SWEEP_EXPERIMENT] or list(rows)
+    sweep = [r for r in rows if r.get("experiment") == SLIP_SWEEP_EXPERIMENT]
+    label = SLIP_SWEEP_EXPERIMENT if sweep else "all runs"
+    sweep = sweep or list(rows)
     ps = sorted({float(r["slip_p"]) for r in sweep})
     agents = [a for a in CONSOLE_AGENTS if any(r["agent"] == a for r in sweep)]
     lines = [
-        f"Success rate, {SLIP_SWEEP_EXPERIMENT if sweep is not rows else 'all runs'} "
+        f"Success rate, {label} "
         "(scenarios and sizes pooled):",
         " " * CONSOLE_AGENT_WIDTH + "".join(f"  p={p:<5g}" for p in ps),
     ]

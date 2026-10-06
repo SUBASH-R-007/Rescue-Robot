@@ -1,0 +1,9 @@
+# Line endings: every text file is stored and checked out with LF on every OS, whatever
+# core.autocrlf says (Git for Windows sets it to true system-wide). The sample maps in maps/
+# must stay LF so they regenerate byte for byte (tests/test_mapgen.py checks this).
+* text=auto eol=lf
+
+# Binary outputs: never touch their bytes.
+*.png binary
+*.gif binary
+*.mp4 binary

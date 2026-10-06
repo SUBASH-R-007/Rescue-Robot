@@ -4,7 +4,7 @@ Examples::
 
     python -m rescue.compare --scenario collapsed_building --seed 7
     python -m rescue.compare --map maps/building_01.txt --agents andor,astar_replan
-    python -m rescue.compare --headless --frames 150 --screenshot out.png
+    python -m rescue.compare --headless --frames 150 --screenshot recordings/out.png
 
 Every pane runs its own mission on the same true map with the same world seed (common random
 numbers) and all missions advance in lock-step. Press ``H`` in the window for the controls.

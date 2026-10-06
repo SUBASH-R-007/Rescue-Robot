@@ -5,8 +5,7 @@ each claim of the proposal deck against it. Every number comes from one of five 
 
 * `results/summary.csv`, which holds per-condition means with 95 % CIs;
 * `results/HYPOTHESES.md`, which holds the claim verdicts and paired tests;
-* `results/run_meta.json`, which describes the run (and `results/quick/run_meta.json` for the
-  `--quick` run);
+* `results/run_meta.json`, which describes the run;
 * `docs/algorithm.md` §7.3, the planning-time table of the `scaling` block, which carries its
   own one-liner;
 * a reproducible computation on `results/raw.csv`.
@@ -124,9 +123,9 @@ so this chapter has no second full run to compare against. The test
 `test_run_experiments_is_deterministic_across_worker_counts` (`tests/test_experiments.py`)
 checks the property on a small config: two runs, with 1 and 2 worker processes, produce
 identical rows apart from the two timing columns (`planning_ms`, `elapsed_ms`).
-`python -m rescue.experiments --quick` runs a reduced version (1,130 tasks, 4,280 runs). It
-took 10.9 s with 18 workers (`results/quick/run_meta.json`; that run used the earlier commit
-`16f7384`).
+`python -m rescue.experiments --quick` runs a reduced version (1,130 tasks, 4,280 runs, set by
+`experiments/quick.yaml`) and finishes well under the 60 s limit. Its output goes to
+`results/quick/`, which is git-ignored, so this chapter reports no quick-run timings or results.
 
 ### 1.5 Terms used in this chapter
 
@@ -298,8 +297,8 @@ AND-OR never replans because of a deviation, so it makes far fewer replanning ca
 survives matched tie-breaking; see §2.6). Both hold by construction, and the run confirms the
 implementation. The run does not show that avoiding these replans improves any mission outcome:
 success and bumps are the same, and once tie-breaks are matched AND-OR wastes no fewer moves. With lazy
-replanning, A\* + replan closes most of the replan gap (§3.8). The price is planning time one to
-two orders of magnitude higher (§2.6, §3.5).
+replanning, A\* + replan closes most of the replan gap (§3.8). The price is planning time: per
+call, AND-OR costs 39× (10×10) to 268× (30×30) as much as A\* + replan (§2.6, §3.5).
 
 ### 2.5 H4: `astar_fixed` fails on the first misbehaving action (supported, by construction)
 
@@ -584,9 +583,9 @@ Raising the sensor radius from r = 1 to r = 2 (15×15, p = 0.2) shortens mission
 replanning agent. (`astar_fixed` never succeeds in this block, so it has no step mean.)
 `andor` goes from 28.64 to 26.24 steps on random_rubble and from 57.73 to 54.23 on
 maze_corridors. Cells explored rise sharply: from 54.6 to 82.1 and from 90.4 to 117.9. These
-are `summary.csv` means. The plot's error bars are unpaired, and its caption says the paired
-tests are in `HYPOTHESES.md`, but `HYPOTHESES.md` has no sensor-radius or replan-mode tests.
-The paired r = 2 − r = 1 differences (same map and outcome stream, 200 maps each) are:
+are `summary.csv` means. The plot's error bars are unpaired (`HYPOTHESES.md` tests neither the
+sensor radius nor the replan mode); the paired r = 2 − r = 1 differences (same map and outcome
+stream, 200 maps each) are:
 
 | Scenario | Agent | Δ steps [95 % CI] | Δ replans [95 % CI] |
 |---|---|---|---|

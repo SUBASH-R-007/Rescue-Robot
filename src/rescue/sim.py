@@ -4,7 +4,7 @@ Examples::
 
     python -m rescue.sim --map maps/deck_demo.txt
     python -m rescue.sim --scenario collapsed_building --rows 20 --cols 20 --seed 7
-    python -m rescue.sim --headless --frames 100 --screenshot out.png
+    python -m rescue.sim --headless --frames 100 --screenshot recordings/out.png
 
 Without ``--map`` / ``--scenario`` the simulator opens ``maps/deck_demo.txt`` with
 ``config.DEMO_SEED``. Press ``H`` in the window for the controls.

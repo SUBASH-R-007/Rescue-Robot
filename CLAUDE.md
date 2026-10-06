@@ -6,31 +6,54 @@ skid) and a partially known map, inside a plan → act → observe → update be
 A simulation suite (Pygame simulator, head-to-head comparison, scenarios, stress tests,
 Monte Carlo harness) produces the report's results.
 
-**Source of truth:** `docs/plan.md` (interface contract + decisions D1–D17). Read it before
-changing any public interface. If code and plan disagree, fix one of them in the same change.
+**Source of truth:** `docs/plan.md` (file tree §1, decisions D1–D21 in §2, module contracts
+§3.1–§3.13: §3.11 viz, §3.12 scenarios / stretch agents / compare, §3.13 experiments). Read it
+before changing any public interface. If code and plan disagree, fix one of them in the same
+change. `docs/brief.md` is the original specification; `docs/architecture.md` the module
+map; `docs/algorithm.md` the algorithm and proofs; `docs/results.md` the measured results
+(its §1 lists where every number comes from: the committed `results/` run).
 
 ## Commands
 
 The dev venv lives outside OneDrive: `C:/Users/SUBASH/.venvs/rescue-robot` (Python 3.11).
-Use its interpreter explicitly (Git Bash path shown):
+Use its interpreter explicitly (Git Bash path shown), from the repository root:
 
 ```bash
 PY=C:/Users/SUBASH/.venvs/rescue-robot/Scripts/python.exe
-$PY -m pip install -e ".[dev,video]"         # install / refresh
-$PY -m pytest -q                              # all tests
-$PY -m pytest -q -m "not slow"                # fast subset
-$PY -m pytest -q -n auto                      # parallel (pytest-xdist)
+$PY -m pip install -e ".[dev,video]"         # install / refresh (video = imageio-ffmpeg, MP4)
+$PY -m pytest -q                              # all tests (viz tests pick the SDL dummy driver)
+$PY -m pytest -q -n auto                      # same, parallel (pytest-xdist): the fast way
+$PY -m pytest -q -m "not slow"                # skips the few @pytest.mark.slow tests only
 $PY -m ruff check .                           # lint (must be clean)
-$PY -m pytest --cov=rescue --cov-report=term-missing   # coverage (viz/ excluded)
-$PY -m rescue.demo                            # slide 9 sample output
-$PY -m rescue.sim --map maps/deck_demo.txt    # interactive simulator
-$PY -m rescue.compare --scenario collapsed_building --seed 7
-$PY -m rescue.replay runs/<file>.json
-$PY -m rescue.experiments --quick             # < 60 s
-$PY -m rescue.experiments --config experiments/main.yaml
+$PY -m pytest --cov=rescue --cov-report=term-missing   # coverage (viz/ excluded; P7 ≥ 85 %)
+$PY -m rescue.demo                            # slide 9 sample output (exit 0 on rescue)
+$PY -m rescue.demo --save                     # ... and write runs/<timestamp>_andor_<seed>.json
+$PY -m rescue.sim --map maps/deck_demo.txt    # interactive simulator (H = help, --save-run)
+$PY -m rescue.compare --scenario collapsed_building --seed 7   # head-to-head panes
+$PY -m rescue.replay runs/<file>.json         # scrub a saved run (←/→, Home/End)
+$PY -m rescue.mapgen random_rubble --rows 15 --cols 15 --seed 0  # print a scenario map
+$PY -m rescue.mapgen maze_corridors --seed 1 --out maps/<name>.txt   # save it (+ header)
+$PY -m rescue.experiments --quick             # < 60 s, writes results/quick/ (git-ignored)
+$PY -m rescue.experiments --config experiments/main.yaml   # full run → results/ (committed)
+$PY scripts/make_figures.py                   # simulator figures → docs/figures/ (deterministic)
+$PY scripts/make_figures.py --only gif tree --out <dir>    # a subset, somewhere else
 ```
 
-Headless pygame (tests, CI, recording): set `SDL_VIDEODRIVER=dummy` (and `SDL_AUDIODRIVER=dummy`).
+Headless runs (CI, screenshots, smoke checks): `sim`, `compare` and `replay` take
+`--headless --frames N --screenshot PNG` and select the SDL dummy drivers themselves (a
+headless run plays automatically; `compare --headless` prints one status line per pane). The
+examples write into the git-ignored `recordings/` (parent directories are created):
+
+```bash
+$PY -m rescue.sim --map maps/deck_demo.txt --headless --frames 100 --screenshot recordings/out.png
+$PY -m rescue.compare --scenario collapsed_building --seed 7 --headless --frames 100 --screenshot recordings/out.png
+$PY -m rescue.demo --save runs/demo.json && $PY -m rescue.replay runs/demo.json --headless --frames 60 --screenshot recordings/out.png
+```
+
+Other scripts that import pygame directly need `SDL_VIDEODRIVER=dummy` (and
+`SDL_AUDIODRIVER=dummy`) in the environment. `--quick` and `make_figures.py` without `--out`
+overwrite `results/quick/` and the committed `docs/figures/` respectively; `--out DIR` writes
+elsewhere. `--max-tasks N --out DIR` runs an evenly spaced sample of the full config.
 
 ## Conventions
 
@@ -43,7 +66,9 @@ Headless pygame (tests, CI, recording): set `SDL_VIDEODRIVER=dummy` (and `SDL_AU
   (`world.RngStreams`, mapgen seeds). Same seed ⇒ identical trace. Never use `random` or
   unseeded numpy.
 - **Common random numbers:** the world consumes exactly one outcome uniform per step and one
-  `(u, permutation)` aftershock draw per step, regardless of agent or outcome.
+  `(u, permutation)` aftershock draw per step while aftershocks are enabled (none when q = 0 or
+  k = 0; the aftershock stream is private, so the outcome stream is unaffected), regardless of
+  agent or outcome.
 - The UI never contains logic: it subscribes to `runner.StepEvent`s.
 - CLI entry points call `rescue.cli_utils.ensure_utf8_stdout()` (Windows consoles + arrows).
 - Honest results: never tune experiments so the proposed agent wins; report failed claims.
@@ -69,3 +94,9 @@ Headless pygame (tests, CI, recording): set `SDL_VIDEODRIVER=dummy` (and `SDL_AU
   (the deck's `N-plan` is not reachable by a distance-ordered planner — see D14).
 - Aftershocks hit cells outside the robot's current sensor footprint and never disconnect the
   survivor on the true map.
+- Stretch agents `dstar_lite` / `vi_expected` are not in `AGENT_NAMES` (UI `1/2/3`, default
+  compare panes); `ALL_AGENT_NAMES` holds all five for `make_agent`, `compare --agents` and the
+  harness (D19).
+- Experiments: a task seed depends only on `(base_seed, scenario, size, replicate)`, so every
+  agent, slip p, sensor radius, replan mode, aftershock q and `planner` override replays the
+  same map and outcome stream; paired tests use the map as the unit (D21, plan §3.13).

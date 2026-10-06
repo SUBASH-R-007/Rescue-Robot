@@ -205,7 +205,7 @@ Why: at p = 0 nothing slips except on high-slip '~' terrain, which keeps its own
 | (d) A* diagonal − g | `astar_replan` astar_tie_break=diagonal (`tiebreak_ablation`) | `astar_replan` astar_tie_break=g (`slip_sweep`) |
 | (H3) unmatched | `andor` tie_break=diagonal (`slip_sweep`) | `astar_replan` astar_tie_break=g (`slip_sweep`) |
 
-Difference = a − b in wasted moves (successful runs on both sides), map as the unit (per-map mean over the p > 0 values, as in H3); Student-t 95 % CI, paired t-test and Wilcoxon signed-rank test over maps. Rule: ✅ if the CIs of both matched comparisons (a) and (b) lie below 0 over p > 0; ❌ if either lies above 0, or if both lie entirely inside ±0.5 moves (equivalence margin fixed a priori, TOST-style: no practically relevant advantage once tie-breaking is matched); ⚠️ otherwise (a CI contains 0 but is too wide to show equivalence: underpowered, not refuted). p = 0 is shown separately and is not part of the verdict. CI half-widths: (a) ±0.24, (b) ±0.36 moves.
+Difference = a − b in wasted moves (successful runs on both sides), map as the unit (per-map mean over the p > 0 values, as in H3); Student-t 95 % CI, paired t-test and Wilcoxon signed-rank test over maps. Rule: ✅ if the CIs of both matched comparisons (a) and (b) lie below 0 over p > 0; ❌ if either lies above 0, or if both lie entirely inside ±0.5 moves (equivalence margin chosen before the final full run, not pre-registered — docs/plan.md D21; TOST-style: no practically relevant advantage once tie-breaking is matched); ⚠️ otherwise (a CI contains 0 but is too wide to show equivalence: underpowered, not refuted). p = 0 is shown separately and is not part of the verdict. CI half-widths: (a) ±0.24, (b) ±0.36 moves.
 
 Pooled over p > 0:
 
