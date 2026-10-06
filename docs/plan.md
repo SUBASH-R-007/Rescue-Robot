@@ -73,7 +73,7 @@ docs/   plan.md algorithm.md architecture.md results.md figures/
 | D10 | **Unplanned state** = after executing action `a` from `s`, the new position is not among the outcomes the agent's current plan anticipated for `(s, a)`. For AND-OR that is `Results(s,a)` on the planning model; for A\* agents it is the single expected next cell. | Same metric for every agent: A\* agents have one per deviation; AND-OR must have 0. |
 | D11 | "Slips handled" in the summary = slips + skids (non-`arrived` outcomes) the agent survived: all of them except a final one the agent answered by giving up (`Abort("aborted")` as its next decision, i.e. `astar_fixed`'s first deviation). Recorded as `MissionMetrics.slips_handled`; metrics also keep the raw `slips` and `skids`. | Matches deck wording; the slip that made a baseline abort was not handled. |
 | D12 | `Replans` counts re-planning calls **after** the initial plan. | Deck semantics. |
-| D13 | Action iteration order `ACTIONS = (N, E, S, W)`. AND-OR `ORDERED_ACTIONS(s)` sorts by `(bfs_dist(intended target), diag(intended target), index in ACTIONS)` where a blocked intended target counts as `s`, and `diag(p) = abs(abs(goal.r-p.r) - abs(goal.c-p.c))` (stay near the straight line to the goal, like A\*'s cross-product tie-break). | Deterministic and reproduces the deck's root plan (E at (1,1), S at (1,2)). |
+| D13 | Action iteration order `ACTIONS = (N, E, S, W)`. AND-OR `ORDERED_ACTIONS(s)` sorts by `(bfs_dist(intended target), diag(intended target), index in ACTIONS)` where a blocked intended target counts as `s`, and `diag(p) = abs(abs(goal.r-p.r) - abs(goal.c-p.c))` (stay near the straight line to the goal, like A\*'s cross-product tie-break); `PlannerConfig.tie_break = "fixed"` drops the `diag` key. The A\* baselines break f-ties by larger g, then FIFO (`PlannerConfig.astar_tie_break = "g"`, the default); `astar_tie_break = "diagonal"` inserts the same `diag(node)` key after `-g` (§3.7), so the two planners can be compared with **approximately matched** tie-breaking (the `tiebreak_ablation` experiment, H7, D21). The match is approximate: A\* still orders by Manhattan `f` and larger `g` before `diag` and rebuilds its path from first-generator parent pointers, while AND-OR orders forward by BFS distance on the belief, then `diag`; near belief obstacles the two can pick different equally short routes (H7 reports the share of matched pairs with identical steps and cells explored as a manipulation check; quick run: about 4–9 % of matched pairs still differ). | Deterministic and reproduces the deck's root plan (E at (1,1), S at (1,2)). |
 | D14 | Deck root plan: the planner produces `E → {arrived: S-plan, slipped: retry E, skid→(2,1): E-plan}`. The deck's `N-plan` at (2,1) **cannot** come from a distance-ordered planner on that map: going N from (2,1) is never strictly better than going E, because `d(2,2) ≤ 1 + min(d(1,2), d(2,1)) = d(1,1)`. At t=0 the belief is optimistic, so `d(2,2)=4 < d(1,1)=6`. We reproduce the shape and document the one-letter deviation rather than hard-coding it. | Honesty over cosmetics. |
 | D15 | Step budget default `4·R·C`. Depth limit default `R·C` (= no effective cut-off since path states are distinct). A strong-cyclic plan reaches the goal with probability 1 only in the limit, so **budget failures of `andor` are possible**, with probability ≈ `p^budget` per mission at worst (e.g. 1×2 corridor, p = 0.4, r = 1: budget 8, ≈ 6.6·10⁻⁴; seed 5582 fails). Negligible on the ≥ 5×5 maps of the tests and experiments; no minimum budget is added, and results must count such failures honestly. | Prompt §2.6, §3. |
 | D16 | Wasted moves = `steps − shortest true-map path length`, recorded only for successful missions (NaN otherwise). | Undefined on failure. |
@@ -81,6 +81,7 @@ docs/   plan.md algorithm.md architecture.md results.md figures/
 | D18 | Map generators draw from `default_rng(SeedSequence([seed, MAPGEN_STREAM_KEY]))`, a stream independent of the World's `SeedSequence(seed).spawn(3)`, so a map depends only on `(scenario, rows, cols, seed, params)` and `sim` / `compare` can use one seed for map and world without correlating them. Start and survivor are at least `min_separation = ceil(MAPGEN_MIN_SEPARATION_FRACTION·(R+C−2))` apart (Manhattan); the requirement is relaxed linearly to 1 only after `MAPGEN_RELAX_START_FRACTION` of `MAPGEN_MAX_ATTEMPTS` failed attempts (never reached in the test sweeps). | Seeded, reproducible maps whose missions are not trivially short. |
 | D19 | The stretch agents (`dstar_lite`, `vi_expected`) are **not** in `AGENT_NAMES` (the UI's `1/2/3` keys, the default comparison panes and brief §5's three compared agents); `ALL_AGENT_NAMES = AGENT_NAMES + STRETCH_AGENT_NAMES` are all buildable by `make_agent` and selectable with `compare --agents`. `vi_expected` reuses `andor`'s replan triggers and D10 anticipation (so 0 unplanned states is an invariant for it too); `dstar_lite` reuses `astar_replan`'s. Their `nodes_expanded` mean different things (VI: Bellman backups = sweeps × proper-region size; D\* Lite: vertices expanded by the incremental call) and are not comparable with AND-OR / A\* expansions. | Keeps the brief's three-way comparison intact while making the stretch agents first-class. |
 | D20 | Comparison panes: every pane's `World` gets the same seed, so the outcome uniform `u_t` is identical in every pane (D3); the outcome **kind** is identical only between panes whose robots act from cells with the same slip p (`TerrainSlip`, D4). On maps without `~` every pane draws the same kind at every `t`. The aftershock draws `(u, permutation)` are shared the same way, but the debris lands only on cells outside each robot's own sensor footprint and keeps the survivor reachable from that robot (D9), so with `q > 0` the panes' true maps stay identical only while their robots stand in the same places (a pane that finished stops receiving debris); the footer then says so (`CRN_AFTERSHOCK_TEXT`). One lock-step tick = one `Mission.step()` per still-running mission, so every running pane has `t == ticks`; a finished pane keeps its own final `t`, and an agent's final Abort takes a tick but no world step, so the footer's `tick n` can exceed every pane's `t`. | Precise meaning of "same outcome stream" and "lock-step" for brief §6.2. |
+| D21 | Tie-break ablation (H7). An experiment block may set `planner:` (a mapping of `PlannerConfig` overrides, validated; e.g. `{tie_break: fixed, astar_tie_break: diagonal}`) that applies to every agent of the block. Its canonical text (`key=value` sorted by key, joined by `;`; `''` = defaults) is the `planner` column of `raw.csv` (right after `replan_mode`), a summary grouping key and part of `stats.TASK_KEYS` (a **condition**, never part of `MAP_KEYS`: the task seed ignores it). `tiebreak_ablation` repeats `slip_sweep`'s scenarios × sizes × p × n_maps for `andor` and `astar_replan` with both tie-breaks swapped, so each ablation run pairs 1:1 (same map, same outcome stream) with a slip-sweep run; H7 pairs them across blocks on (scenario, rows, cols, p, r, replan mode, q, replicate, seed) with the map as the unit: (a) andor diagonal − astar_replan diagonal, (b) andor fixed − astar_replan larger-g, plus each tie-break's own effect. ✅ iff the CIs of (a) and (b) are both below 0 over p > 0; ❌ if either is above 0, **or** if both lie entirely inside ±`EQUIVALENCE_MARGIN_MOVES` (0.5 moves, `config.py`, fixed a priori; TOST-style equivalence: no practically relevant advantage once tie-breaking is matched); ⚠️ otherwise (a CI contains 0 but is too wide to show equivalence: underpowered, not refuted, as for every other paired claim). The ✅ test comes first. H7 prints both matched CI half-widths, the reason for its verdict, and a manipulation check (share of matched pairs with identical steps and cells explored at p = 0 and p > 0; the matching is approximate, D13). | At p = 0 nothing slips except on high-slip `~` terrain, which keeps its own slip parameter (`DEFAULT_TERRAIN_HIGH_P` = 0.4) at every block p and occurs only in `flooded_zone` (full run: 510/600 `andor` runs there slipped or skidded at p = 0, 0 elsewhere); on the other scenarios AND-OR has no contingency to plan for and reduces to greedy shortest-route search on the optimistic belief, yet it already wasted fewer moves than A\* + replan in the full run (H3's p = 0 row: −2.12 [−2.68, −1.56] moves overall and −2.74 [−3.48, −2.00] without `flooded_zone`, the clean no-contingency baseline that H3 also reports). So part of H3's gap is path choice (tie-breaking), which must be separated from the contingency-planning effect before H3 is reported. |
 
 ---
 
@@ -106,13 +107,16 @@ class PlannerConfig:      depth_limit: int | None = None   # None → rows*cols
                           tie_break: Literal["diagonal", "fixed"] = "diagonal"
                           validate: bool = False           # validate every plan (debug/tests)
                           fallback_to_reference: bool = True
+                          astar_tie_break: Literal["g", "diagonal"] = "g"   # A* agents (D13, §3.7)
 @dataclass(frozen=True)
 class AgentConfig:        replan_mode: Literal["eager", "lazy"] = "eager"
 def load_yaml(path) -> dict
 def world_config_from_dict(d) -> WorldConfig   (and planner/agent equivalents; unknown keys → ValueError)
 ```
 `WorldConfig.__post_init__` validates `0 ≤ slip_p ≤ MAX_SLIP_P` (ValueError otherwise) and
-`sensor_radius ≥ 0`.
+`sensor_radius ≥ 0`. `PlannerConfig.__post_init__` validates `tie_break ∈ TIE_BREAKS` and
+`astar_tie_break ∈ ASTAR_TIE_BREAKS` (ValueError otherwise); `astar_tie_break` is read by the
+A\* agents only (`astar_fixed`, `astar_replan`; D\* Lite and AND-OR ignore it).
 
 ### 3.2 `grid.py`
 ```python
@@ -270,7 +274,11 @@ def shortest_path_length(passable, start, goal) -> int | None
 def reachable(passable, start, goal) -> bool
 # astar.py
 @dataclass(frozen=True) class AStarResult: path: list[Pos] | None; nodes_expanded: int
-def astar(passable, start, goal) -> AStarResult   # Manhattan h, ties on f broken by larger g, then FIFO
+def astar(passable, start, goal, tie_break="g") -> AStarResult
+    # Manhattan h. tie_break="g": heap key (f, -g, counter) — larger g, then FIFO (bit-identical
+    # to the original search). tie_break="diagonal": (f, -g, diag(node), counter) with D13's
+    # diag(p) = abs(abs(goal.r-p.r) - abs(goal.c-p.c)), smaller first. The heuristic is unchanged,
+    # so both stay optimal. PathAgent passes PlannerConfig.astar_tie_break.
 # andor.py
 @dataclass(frozen=True)
 class PlannerStats: nodes_expanded: int; or_nodes: int; and_nodes: int; rollbacks: int
@@ -662,8 +670,11 @@ vectorising `transition_tables` (39 → 1.6 ms on a 30×30 open belief at p = 0.
 29 ms), each plan is still a full VI on the whole belief (tens of ms at 30×30, many replans
 per mission), so the Phase 6 harness must budget for it.
 
-`andor` vs `astar_replan` under CRN: both follow a shortest route on the optimistic belief with
-compatible tie-breaking, so they take *identical* trajectories until the contingency plan's
+`andor` vs `astar_replan` under CRN: both follow a shortest route on the optimistic belief
+(with *different* tie-breaks among equally short routes — D13 diagonal vs larger-g/FIFO; the
+Phase 6 ablation D21 / H7 measures what that alone contributes, with approximately matched
+tie-breaks), so they take *identical*
+trajectories until the contingency plan's
 action first differs from A\*'s next move, and until then differ only in Replans, Unplanned and
 Plan ms. Scratch check at 15×15, p = 0.2, seeds 0–39: identical whole trajectories on 5/40
 `random_rubble`, 13/40 `collapsed_building`, 4/40 `flooded_zone` and 16/40 `maze_corridors`

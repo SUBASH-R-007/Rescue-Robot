@@ -1,6 +1,7 @@
 # Quick smoke run (< 60 s incl. plots): python -m rescue.experiments --quick
-# Same blocks as main.yaml with N = 20 maps and one size (10x10); the scaling block keeps two
-# sizes (10, 15) with 5 maps. Writes to results/quick/ so it never overwrites the full results.
+# Same blocks as main.yaml (incl. tiebreak_ablation) with N = 20 maps and one size (10x10); the
+# scaling block keeps two sizes (10, 15) with 5 maps. Writes to results/quick/ so it never
+# overwrites the full results.
 name: quick
 base_seed: 2026
 n_maps: 20
@@ -39,3 +40,10 @@ blocks:
     slip_p: [0.2]
     agents: [andor, astar_replan, dstar_lite, vi_expected]
     n_maps: 5
+
+  - name: tiebreak_ablation
+    scenarios: [random_rubble, collapsed_building, flooded_zone, maze_corridors]
+    sizes: [10]
+    slip_p: [0.0, 0.1, 0.2, 0.3, 0.4]
+    agents: [andor, astar_replan]
+    planner: {tie_break: fixed, astar_tie_break: diagonal}

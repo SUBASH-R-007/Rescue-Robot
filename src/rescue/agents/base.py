@@ -357,9 +357,13 @@ class PathAgent(Agent):
         self._cursor = 0
 
     def _plan_path(self) -> bool:
-        """Run A* from ``self.pos`` on the optimistic belief; True if it was a replan."""
+        """Run A* from ``self.pos`` on the optimistic belief; True if it was a replan.
+
+        The f-tie-break is ``planner_config.astar_tie_break`` (docs/plan.md §3.7).
+        """
         t0 = time.perf_counter()
-        result = astar(self.belief.passable_mask(), self.pos, self.goal)
+        result = astar(self.belief.passable_mask(), self.pos, self.goal,
+                       self.planner_config.astar_tie_break)
         elapsed_ms = (time.perf_counter() - t0) * MS_PER_S
         path = tuple(result.path) if result.path is not None else None
         self._path = path

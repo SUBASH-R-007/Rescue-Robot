@@ -27,7 +27,8 @@ from rescue.mapgen import SCENARIOS
 #: Default confidence level of every interval in the harness.
 DEFAULT_CONFIDENCE: float = 0.95
 
-#: Columns that identify a task (one map + one outcome stream); paired comparisons join on them.
+#: Columns that identify a task (one map + one outcome stream under one condition); paired
+#: comparisons join on them. ``planner`` (PlannerConfig overrides) is a condition, like slip p.
 TASK_KEYS: tuple[str, ...] = (
     "experiment",
     "scenario",
@@ -36,6 +37,7 @@ TASK_KEYS: tuple[str, ...] = (
     "slip_p",
     "sensor_radius",
     "replan_mode",
+    "planner",
     "aftershock_q",
     "aftershock_k",
     "replicate",
@@ -43,8 +45,9 @@ TASK_KEYS: tuple[str, ...] = (
 )
 
 #: Columns that identify one map (and its outcome stream) inside an experiment. Task seeds depend
-#: only on (base seed, scenario, size, replicate), so every condition of a block reuses the map:
-#: differences from one map at several slip p values are correlated, not independent.
+#: only on (base seed, scenario, size, replicate), so every condition of a block (slip p, planner
+#: overrides, ...) reuses the map: differences from one map at several conditions are
+#: correlated, not independent. ``planner`` is a condition, never part of a map's identity.
 MAP_KEYS: tuple[str, ...] = ("experiment", "scenario", "rows", "cols", "replicate", "seed")
 
 #: How the Wilcoxon signed-rank test treats zero differences (see ``_wilcoxon_p``).
@@ -58,6 +61,7 @@ GROUP_KEYS: tuple[str, ...] = (
     "slip_p",
     "sensor_radius",
     "replan_mode",
+    "planner",
     "aftershock_q",
     "agent",
 )
@@ -107,7 +111,7 @@ SUMMARY_COLUMNS: tuple[str, ...] = (
 
 # --- raw.csv column types ---------------------------------------------------------------------
 _STR_COLUMNS: frozenset[str] = frozenset(
-    {"experiment", "scenario", "replan_mode", "agent", "failure_reason"}
+    {"experiment", "scenario", "replan_mode", "planner", "agent", "failure_reason"}
 )
 _INT_COLUMNS: frozenset[str] = frozenset(
     {
@@ -153,13 +157,24 @@ def _parse_value(column: str, text: str) -> Any:
     return text
 
 
+#: Columns added after the first full run, with the value older ``raw.csv`` files imply.
+_BACKFILL_COLUMNS: dict[str, Any] = {"planner": ""}
+
+
 def read_raw(path: str | Path) -> list[dict[str, Any]]:
-    """Read ``raw.csv`` into typed rows (bools, ints, floats with NaN, strings)."""
+    """Read ``raw.csv`` into typed rows (bools, ints, floats with NaN, strings).
+
+    Files written before the ``planner`` column existed read as ``planner = ''`` (defaults).
+    """
     with Path(path).open(newline="", encoding="utf-8") as fh:
         reader = csv.DictReader(fh)
-        return [
+        rows = [
             {col: _parse_value(col, text) for col, text in row.items()} for row in reader
         ]
+    for row in rows:
+        for column, value in _BACKFILL_COLUMNS.items():
+            row.setdefault(column, value)
+    return rows
 
 
 # --- intervals --------------------------------------------------------------------------------
@@ -419,7 +434,8 @@ def summarize(
     ``success_hi``; each metric of :data:`SUMMARY_METRICS` has ``_mean`` / ``_lo`` / ``_hi``
     (Student t). ``steps`` and ``wasted_moves`` use successful runs only; ``steps_all`` uses
     every run. Groups are ordered by experiment (first appearance), scenario (registry order),
-    size, slip p, radius, replan mode, aftershock q and agent (display order).
+    size, slip p, radius, replan mode, planner overrides, aftershock q and agent (display
+    order).
     """
     groups: dict[tuple[Any, ...], list[dict[str, Any]]] = {}
     for row in rows:
@@ -440,6 +456,7 @@ def summarize(
             g["slip_p"],
             g["sensor_radius"],
             g["replan_mode"],
+            g["planner"],
             g["aftershock_q"],
             _order_index(agent_order, g["agent"]),
         )

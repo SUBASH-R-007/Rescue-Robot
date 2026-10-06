@@ -8,6 +8,7 @@ built from plain dicts (e.g. parsed YAML) with the ``*_from_dict`` helpers.
 from __future__ import annotations
 
 from dataclasses import dataclass, field, fields
+from numbers import Integral
 from pathlib import Path
 from typing import Any, Literal
 
@@ -55,6 +56,10 @@ RUBBLE_DENSITY_RANGE: tuple[float, float] = (0.15, 0.35)
 
 ReplanMode = Literal["eager", "lazy"]
 TieBreak = Literal["diagonal", "fixed"]
+AStarTieBreak = Literal["g", "diagonal"]
+#: Accepted values of ``PlannerConfig.tie_break`` and ``PlannerConfig.astar_tie_break``.
+TIE_BREAKS: tuple[str, ...] = ("diagonal", "fixed")
+ASTAR_TIE_BREAKS: tuple[str, ...] = ("g", "diagonal")
 
 
 @dataclass(frozen=True)
@@ -103,7 +108,7 @@ class WorldConfig:
 
 @dataclass(frozen=True)
 class PlannerConfig:
-    """Parameters of the AND-OR planner."""
+    """Parameters of the AND-OR planner (and the A* baselines' tie-break)."""
 
     #: Maximum OR-depth; ``None`` means rows * cols (no effective cut-off).
     depth_limit: int | None = None
@@ -113,12 +118,28 @@ class PlannerConfig:
     validate: bool = False
     #: Fall back to the fixpoint reference planner if AND-OR fails or is invalid.
     fallback_to_reference: bool = True
+    #: f-tie-break of the A* agents (``astar_fixed``, ``astar_replan``): ``"g"`` = larger g,
+    #: then FIFO; ``"diagonal"`` = larger g, then the D13 ``diag`` key (docs/plan.md D13, §3.7).
+    #: D* Lite ignores it.
+    astar_tie_break: AStarTieBreak = "g"
 
     def __post_init__(self) -> None:
+        # Types are checked too: a quoted YAML override such as ``validate: "false"`` would
+        # otherwise be a truthy string while the run's ``planner`` label said ``false``.
+        if self.depth_limit is not None and (
+            isinstance(self.depth_limit, bool) or not isinstance(self.depth_limit, Integral)
+        ):
+            raise ValueError(f"depth_limit must be an int or None, got {self.depth_limit!r}")
+        for name in ("validate", "fallback_to_reference"):
+            if not isinstance(getattr(self, name), bool):
+                raise ValueError(f"{name} must be a bool, got {getattr(self, name)!r}")
         if self.depth_limit is not None and self.depth_limit < 0:
             raise ValueError(f"depth_limit must be >= 0 or None, got {self.depth_limit}")
-        if self.tie_break not in ("diagonal", "fixed"):
+        if not isinstance(self.tie_break, str) or self.tie_break not in TIE_BREAKS:
             raise ValueError(f"unknown tie_break {self.tie_break!r}")
+        if (not isinstance(self.astar_tie_break, str)
+                or self.astar_tie_break not in ASTAR_TIE_BREAKS):
+            raise ValueError(f"unknown astar_tie_break {self.astar_tie_break!r}")
 
 
 @dataclass(frozen=True)
@@ -283,3 +304,12 @@ FLOOD_CROSSING_START_TRIES: int = 12
 #: Compare panes: most rows of panes the layout may use; it picks the row count giving the
 #: largest map cells (ties keep fewer rows), so wide maps with 4-5 agents get two rows.
 COMPARE_MAX_PANE_ROWS: int = 2
+
+# --- Experiments: tie-break ablation (H7, docs/plan.md D21) ----------------------------------
+#: Equivalence margin (wasted moves per mission) of H7's ❌ rule, fixed a priori (before the
+#: full ablation run): H7 is refuted when either matched 95 % CI lies above 0, or when both
+#: lie entirely inside [-margin, +margin] (equivalence, TOST-style: "no advantage once
+#: tie-breaking is matched"). Half a move: below the smallest per-mission difference (one move)
+#: and about a sixth of H3's full-run gap. A CI that contains 0 but is wider than the margin is
+#: ⚠️ inconclusive, as for every other paired claim.
+EQUIVALENCE_MARGIN_MOVES: float = 0.5

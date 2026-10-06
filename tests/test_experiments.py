@@ -62,6 +62,7 @@ TASK_COLUMNS: tuple[str, ...] = (
     "slip_p",
     "sensor_radius",
     "replan_mode",
+    "planner",
     "aftershock_q",
     "aftershock_k",
     "replicate",
@@ -77,6 +78,9 @@ TINY_SCENARIOS: tuple[str, ...] = ("flooded_zone", "random_rubble")
 TINY_N_MAPS: int = 3
 TINY_BASE_SEED: int = 11
 PNG_SIGNATURE: bytes = b"\x89PNG\r\n\x1a\n"
+#: PlannerConfig overrides of the tie-break ablation block, and their ``planner`` column text.
+ABLATION_OVERRIDES: dict[str, str] = {"tie_break": "fixed", "astar_tie_break": "diagonal"}
+ABLATION_PLANNER: str = "astar_tie_break=diagonal;tie_break=fixed"
 
 
 # --- helpers -----------------------------------------------------------------------------------
@@ -163,6 +167,7 @@ def synth_row(**values: Any) -> dict[str, Any]:
         slip_p=0.2,
         sensor_radius=1,
         replan_mode="eager",
+        planner="",
         aftershock_q=0.0,
         aftershock_k=2,
         replicate=0,
@@ -777,7 +782,7 @@ def test_summarize_groups_and_columns(tmp_path: Path) -> None:
         "steps", "wasted_moves", "replans", "unplanned_states", "planning_ms", "bumps",
     }
     group_keys = (
-        "experiment", "scenario", "rows", "slip_p", "sensor_radius", "replan_mode",
+        "experiment", "scenario", "rows", "slip_p", "sensor_radius", "replan_mode", "planner",
         "aftershock_q", "agent",
     )
     columns = list(stats.SUMMARY_COLUMNS)
@@ -835,15 +840,15 @@ PASS, FAIL, WARN = "✅", "❌", "⚠️"
 
 
 def _claims(rows: Sequence[dict[str, Any]]) -> dict[str, Any]:
-    """``evaluate(rows)`` keyed H1..H6 (by label, else by position)."""
+    """``evaluate(rows)`` keyed H1..H7 (by label, else by position)."""
     results = hypotheses.evaluate(rows)
-    assert len(results) == 6
+    assert len(results) == 7
     out = {}
     for i, h in enumerate(results):
         assert h.verdict in (PASS, FAIL, WARN)
         assert h.claim and h.measured and h.detail
         out[getattr(h, "label", "") or f"H{i + 1}"] = h
-    assert list(out) == [f"H{i}" for i in range(1, 7)]
+    assert list(out) == [f"H{i}" for i in range(1, 8)]
     return out
 
 
@@ -1036,6 +1041,7 @@ ALL_PLOTS: frozenset[str] = SLIP_PLOTS | {
     "success_under_aftershocks.png",
     "sensor_radius.png",
     "replan_mode.png",
+    "tiebreak_ablation.png",
 }
 
 
@@ -1081,6 +1087,10 @@ def _plot_rows(with_blocks: bool) -> list[dict[str, Any]]:
             add("sensor_range", AGENT_NAMES, PLOT_N, sensor_radius=radius)
         for mode in ("eager", "lazy"):
             add("replan_mode", ("andor", "astar_replan"), PLOT_N, replan_mode=mode)
+        for scenario in ("random_rubble", "maze_corridors"):
+            for p in (0.0, 0.2, 0.4):
+                add(spec.TIEBREAK_ABLATION_EXPERIMENT, ("andor", "astar_replan"), PLOT_N,
+                    scenario=scenario, slip_p=p, planner=ABLATION_PLANNER)
     return rows
 
 
@@ -1368,3 +1378,330 @@ def test_metric_charts_show_one_grid_size() -> None:
     assert "15×15" in note and "10×10" in note and "20×20" in note
     single, no_note = plots._metric_rows([r for r in block if r["rows"] == 10])
     assert len(single) == 3 and no_note == ""
+
+
+# --- tie-break ablation (PlannerConfig overrides per block, H7) ----------------------------------
+
+
+def test_planner_label_is_canonical() -> None:
+    assert spec.planner_label({}) == ""
+    assert spec.planner_label(ABLATION_OVERRIDES) == ABLATION_PLANNER  # keys sorted
+    assert spec.planner_label({"validate": True, "depth_limit": None}) == (
+        "depth_limit=null;validate=true"
+    )
+    assert spec.parse_planner_label(ABLATION_PLANNER) == ABLATION_OVERRIDES
+    assert spec.parse_planner_label("") == {}
+    with pytest.raises(ValueError):
+        spec.parse_planner_label("tie_break")
+    assert spec.effective_planner_value("", "tie_break") == "diagonal"
+    assert spec.effective_planner_value("", "astar_tie_break") == "g"
+    assert spec.effective_planner_value(ABLATION_PLANNER, "tie_break") == "fixed"
+    assert spec.effective_planner_value(ABLATION_PLANNER, "astar_tie_break") == "diagonal"
+
+
+def test_block_planner_overrides_parse_and_validate() -> None:
+    block = spec.block_from_dict({
+        "name": "ablation", "scenarios": ["random_rubble"], "sizes": [6], "slip_p": [0.1],
+        "planner": {"tie_break": "fixed", "astar_tie_break": "diagonal"},
+    })
+    assert block.planner == ABLATION_OVERRIDES
+    assert block.planner_label == ABLATION_PLANNER
+    assert make_block().planner == {} and make_block().planner_label == ""
+    hash(block)  # still hashable (the mapping is excluded from the hash)
+    bad = [
+        {"tie_breaker": "fixed"},            # unknown PlannerConfig field
+        {"astar_tie_break": "fixed"},        # invalid value (validated by PlannerConfig)
+        {"tie_break": "coin"},
+        {"tie_break": ["fixed"]},            # not a scalar
+        {"tie_break": "a=b"},                # would break the canonical label
+        {"fallback_to_reference": "false"},  # quoted YAML bool: a truthy string
+        {"validate": "true"},                # same label as True, different type
+        {"validate": 1},
+        {"depth_limit": 2.5},                # not an int
+        {"depth_limit": True},               # bool is not a depth
+        {"depth_limit": "7"},
+        {"tie_break": 1},                    # tie-breaks are strings
+    ]
+    for overrides in bad:
+        with pytest.raises(ValueError):
+            make_block(planner=overrides)
+    with pytest.raises(ValueError):
+        spec.block_from_dict({"name": "x", "scenarios": ["random_rubble"], "sizes": [6],
+                              "slip_p": [0.1], "planner": ["tie_break"]})
+    with pytest.raises(ValueError, match="fallback_to_reference must be a bool"):
+        spec.block_from_dict({"name": "x", "scenarios": ["random_rubble"], "sizes": [6],
+                              "slip_p": [0.1], "planner": {"fallback_to_reference": "false"}})
+    # Correctly typed values are accepted and labelled as YAML would write them.
+    ok = make_block(planner={"fallback_to_reference": False, "depth_limit": 7})
+    assert ok.planner_label == "depth_limit=7;fallback_to_reference=false"
+    assert spec.effective_planner_value(ok.planner_label, "fallback_to_reference") == "false"
+    for kwargs in ({"fallback_to_reference": "false"}, {"validate": "true"},
+                   {"depth_limit": 2.5}, {"astar_tie_break": 0}):
+        with pytest.raises(ValueError):
+            PlannerConfig(**kwargs)
+    assert PlannerConfig(depth_limit=np.int64(3)).depth_limit == 3
+
+
+def test_planner_overrides_reach_tasks_without_changing_seeds() -> None:
+    plain = make_block("plain")
+    ablation = make_block("ablation", planner=ABLATION_OVERRIDES)
+    tasks = expand_tasks(make_config((plain, ablation)))
+
+    def key(t: Task) -> tuple[Any, ...]:
+        return (t.scenario, t.rows, t.cols, t.slip_p, t.sensor_radius, t.replan_mode,
+                t.aftershock_q, t.replicate)
+
+    by_block: dict[str, dict[Any, Task]] = defaultdict(dict)
+    for t in tasks:
+        by_block[t.experiment][key(t)] = t
+    assert by_block["plain"].keys() == by_block["ablation"].keys()
+    for k, t in by_block["ablation"].items():
+        assert t.seed == by_block["plain"][k].seed  # CRN: same map + outcome stream
+        assert t.planner == ABLATION_PLANNER
+        assert t.planner_config() == PlannerConfig(tie_break="fixed", astar_tie_break="diagonal")
+        assert by_block["plain"][k].planner == ""
+        assert by_block["plain"][k].planner_config() == PlannerConfig()
+    assert len(set(tasks)) == len(tasks)
+
+
+def test_run_task_builds_the_planner_config(monkeypatch: pytest.MonkeyPatch) -> None:
+    import rescue.agents
+
+    seen: list[Any] = []
+    real = rescue.agents.make_agent
+
+    def spy(name: str, transition: Any, planner_config: Any = None,
+            agent_config: Any = None) -> Any:
+        seen.append(planner_config)
+        return real(name, transition, planner_config, agent_config)
+
+    monkeypatch.setattr(rescue.agents, "make_agent", spy)
+    block = make_block("ablation", scenarios=("random_rubble",), slip_p=(0.2,),
+                       planner=ABLATION_OVERRIDES)
+    task = _single_task(block, agents=("andor", "astar_replan"))
+    rows = run.run_task(task)
+    assert [r["planner"] for r in rows] == [ABLATION_PLANNER] * 2
+    assert seen == [PlannerConfig(tie_break="fixed", astar_tie_break="diagonal")] * 2
+    columns = list(run.RAW_COLUMNS)
+    assert columns.index("planner") == columns.index("replan_mode") + 1
+
+
+def test_planner_is_a_condition_not_a_map(tmp_path: Path) -> None:
+    assert "planner" in stats.TASK_KEYS and "planner" in stats.GROUP_KEYS
+    assert "planner" not in stats.MAP_KEYS
+    rows = [synth_row(replicate=i, seed=i) for i in range(4)]
+    rows += [synth_row(replicate=i, seed=i, planner=ABLATION_PLANNER) for i in range(4)]
+    summary = stats.summarize(rows)
+    assert [(g["planner"], g["n"]) for g in summary] == [("", 4), (ABLATION_PLANNER, 4)]
+    # Old raw.csv files (no planner column) read back with the default planner.
+    path = tmp_path / "old_raw.csv"
+    columns = [c for c in run.RAW_COLUMNS if c != "planner"]
+    with path.open("w", newline="", encoding="utf-8") as fh:
+        writer = csv.DictWriter(fh, fieldnames=columns, lineterminator="\n")
+        writer.writeheader()
+        writer.writerow({c: synth_row()[c] for c in columns})
+    (row,) = stats.read_raw(path)
+    assert row["planner"] == ""
+
+
+@pytest.mark.parametrize("path", [MAIN_CONFIG, QUICK_CONFIG], ids=["main", "quick"])
+def test_shipped_configs_include_the_tiebreak_ablation(path: Path) -> None:
+    cfg = load_experiment_config(path)
+    blocks = {b.name: b for b in cfg.blocks}
+    ablation = blocks[spec.TIEBREAK_ABLATION_EXPERIMENT]
+    sweep = blocks[spec.SLIP_SWEEP_EXPERIMENT]
+    assert ablation.planner == ABLATION_OVERRIDES
+    assert sweep.planner == {}
+    assert set(cfg.block_agents(ablation)) == {"andor", "astar_replan"}
+    for name in ("scenarios", "sizes", "slip_p", "sensor_radius", "replan_mode",
+                 "aftershock_q"):
+        assert getattr(ablation, name) == getattr(sweep, name), name
+    assert cfg.block_n_maps(ablation) == cfg.block_n_maps(sweep)
+    # Every ablation task pairs 1:1 with a slip-sweep task (same seed = same map + stream).
+    tasks = expand_tasks(cfg)
+
+    def key(t: Task) -> tuple[Any, ...]:
+        return (t.scenario, t.rows, t.slip_p, t.replicate)
+
+    sweep_seeds = {key(t): t.seed for t in tasks if t.experiment == sweep.name}
+    ablation_tasks = [t for t in tasks if t.experiment == ablation.name]
+    assert len(ablation_tasks) == len(sweep_seeds)
+    assert all(sweep_seeds[key(t)] == t.seed for t in ablation_tasks)
+
+
+def _ablation_rows(
+    diag_diff: float,
+    plain_diff: float,
+    *,
+    n: int = 40,
+    ps: Sequence[float] = (0.0, 0.1, 0.3),
+    p0_diff: float = 50.0,
+    spread: float = 0.5,
+    p0_slips: Sequence[str] = (),
+    sweep_name: str = spec.SLIP_SWEEP_EXPERIMENT,
+) -> list[dict[str, Any]]:
+    """Slip sweep + tie-break ablation rows with controlled matched differences.
+
+    Wasted moves per map i: astar_replan larger-g ``base``; astar_replan diagonal ``base + 1``;
+    andor diagonal ``base + 1 + diag_diff``; andor fixed ``base + plain_diff`` (each matched
+    difference ± ``spread``, alternating in pairs of maps so the mean is exact). At p = 0 both
+    matched differences are ``p0_diff`` (must not enter the verdict). Runs at p = 0 on the
+    scenarios in ``p0_slips`` record one slip (high-slip terrain); the slip sweep is named
+    ``sweep_name``.
+    """
+    scenarios = ("random_rubble", "maze_corridors")
+    rows: list[dict[str, Any]] = []
+    for p in ps:
+        for i in range(n):
+            common = {"slip_p": p, "replicate": i, "seed": i, "scenario": scenarios[i % 2]}
+            base = 5.0 + i % 4
+            sign = 1.0 if (i // 2) % 2 == 0 else -1.0
+            d_diag = diag_diff + sign * spread if p > 0 else p0_diff
+            d_plain = plain_diff + sign * spread if p > 0 else p0_diff
+            if p == 0 and common["scenario"] in p0_slips:
+                common["slips"] = 1
+            sweep = {"experiment": sweep_name, "planner": "", **common}
+            ablation = {"experiment": spec.TIEBREAK_ABLATION_EXPERIMENT,
+                        "planner": ABLATION_PLANNER, **common}
+            rows += [
+                synth_row(agent="astar_replan", wasted_moves=base, **sweep),
+                synth_row(agent="andor", wasted_moves=base + 1.0 + d_diag, **sweep),
+                synth_row(agent="astar_replan", wasted_moves=base + 1.0, **ablation),
+                synth_row(agent="andor", wasted_moves=base + d_plain, **ablation),
+            ]
+    return rows
+
+
+@pytest.mark.parametrize(
+    ("diag_diff", "plain_diff", "spread", "verdict", "reason"),
+    [
+        (-1.0, -1.0, 0.5, PASS, "both matched CIs below 0"),
+        (-1.0, 0.0, 0.5, WARN, "inconclusive"),  # one below 0, the other contains 0
+        (0.0, -1.0, 0.5, WARN, "inconclusive"),
+        # Both contain 0: equivalent (both CIs inside ±margin, half-width ≈ 0.16) → ❌ ...
+        (0.0, 0.0, 0.5, FAIL, "both matched CIs inside"),
+        # ... but too wide to show equivalence (half-width ≈ 0.97) → ⚠️ underpowered.
+        (0.0, 0.0, 3.0, WARN, "inconclusive"),
+        (-1.0, 1.0, 0.5, FAIL, "a matched CI lies above 0"),  # one CI above 0
+        (1.0, -1.0, 0.5, FAIL, "a matched CI lies above 0"),
+    ],
+)
+def test_h7_verdict_rule(
+    diag_diff: float, plain_diff: float, spread: float, verdict: str, reason: str
+) -> None:
+    rows = _ablation_rows(diag_diff, plain_diff, spread=spread)
+    claims = _claims(rows)
+    h7 = claims["H7"]
+    assert h7.verdict == verdict, h7.measured
+    assert reason in h7.measured
+    assert f"matched diagonal {diag_diff:+.2f}" in h7.measured
+    assert f"matched plain {plain_diff:+.2f}" in h7.measured
+    assert "(CI ±" in h7.measured and "CI half-widths: (a) ±" in h7.detail
+    assert f"±{hypotheses.EQUIVALENCE_MARGIN_MOVES:g} moves" in h7.detail
+    # Single-factor effects: andor diagonal − fixed = 1 + diag − plain; A* diagonal − g = 1.
+    assert f"andor diagonal − fixed {1.0 + diag_diff - plain_diff:+.2f}" in h7.measured
+    assert "A* diagonal − g +1.00" in h7.measured
+    assert f"unmatched (H3) {1.0 + diag_diff:+.2f}" in h7.measured
+    for needle in ("0 (not in the verdict)", "0.1", "0.3", "random_rubble", "maze_corridors",
+                   spec.TIEBREAK_ABLATION_EXPERIMENT):
+        assert needle in h7.detail, needle
+    # The p = 0 row shows the large difference that the verdict leaves out.
+    assert "+50.00" in h7.detail
+    # H3 points at H7 and states its own p = 0 difference.
+    assert "H7" in claims["H3"].detail and "p = 0" in claims["H3"].detail
+    # Manipulation check: synthetic runs share steps and cells explored, so every pair matches.
+    assert "Manipulation check" in h7.detail and "approximate" in h7.measured
+    assert "(a) 100.0% (80/80)" in h7.measured
+    assert "| (b) matched, plain | 100.0% (40/40) | 100.0% (80/80) |" in h7.detail
+
+
+def test_h7_verdict_margin_boundaries() -> None:
+    def pd(lo: float, hi: float) -> stats.PairedDifference:
+        return stats.PairedDifference((lo + hi) / 2, lo, hi, 10, 0.5, 0.5, 10, 10)
+
+    margin = hypotheses.EQUIVALENCE_MARGIN_MOVES
+    inside, wide = pd(-margin, margin), pd(-margin - 0.01, margin)
+    assert hypotheses._h7_verdict(inside, inside) == FAIL     # equivalent (TOST)
+    assert hypotheses._h7_verdict(inside, wide) == WARN       # one CI too wide
+    assert hypotheses._h7_verdict(pd(-0.3, -0.1), pd(-0.4, -0.2)) == PASS  # ✅ checked first
+    assert hypotheses._h7_verdict(pd(-0.3, -0.1), inside) == FAIL  # below 0 but equivalent
+    assert hypotheses._h7_verdict(pd(-2.0, -1.0), pd(0.1, 0.3)) == FAIL  # above 0
+
+
+def test_h7_identical_share_pairs_all_runs() -> None:
+    a = [synth_row(replicate=i, seed=i, steps=20 + (i == 1), success=i != 2) for i in range(4)]
+    b = [synth_row(agent="astar_replan", replicate=i, seed=i) for i in range(3)]
+    # Pair 1 differs in steps; pair 2 failed on one side but still counts; map 3 is unpaired.
+    assert hypotheses.h7_identical_share(a, b) == (2, 3)
+    c = [{**r, "cells_explored": 31} if r["replicate"] == 0 else r for r in b]
+    assert hypotheses.h7_identical_share(a, c) == (1, 3)
+
+
+def test_h3_p0_baseline_excludes_high_slip_scenarios() -> None:
+    rows = _ablation_rows(-1.0, -1.0, p0_slips=("maze_corridors",))
+    rows = [r for r in rows if r["experiment"] == spec.SLIP_SWEEP_EXPERIMENT]
+    # At p = 0 andor wastes p0_diff + 1 = 51 moves more than astar_replan on every map; make
+    # maze_corridors (the "high-slip" scenario here) differ so the clean baseline is visible.
+    for r in rows:
+        if r["slip_p"] == 0 and r["scenario"] == "maze_corridors" and r["agent"] == "andor":
+            r["wasted_moves"] -= 40.0
+    detail = _claims(rows)["H3"].detail
+    assert "nothing slips except on high-slip '~' terrain" in detail
+    assert "only in maze_corridors here: 40/40 of the runs there at p = 0" in detail
+    assert "The p = 0 difference is already +31.00" in detail
+    assert "without maze_corridors (the clean no-contingency baseline) it is +51.00" in detail
+    # Without slips at p = 0 there is nothing to exclude.
+    clean = _ablation_rows(-1.0, -1.0)
+    detail = _claims([r for r in clean if r["experiment"] == spec.SLIP_SWEEP_EXPERIMENT])[
+        "H3"].detail
+    assert "no run at p = 0 had a slip or skid" in detail and "clean no-contingency" not in detail
+
+
+def test_h7_pairs_across_blocks_with_the_map_as_unit() -> None:
+    rows = _ablation_rows(-1.0, -1.0, n=20)
+    blocks = (spec.SLIP_SWEEP_EXPERIMENT, spec.TIEBREAK_ABLATION_EXPERIMENT)
+    comp = hypotheses.H7_COMPARISONS[0]
+    side_a, side_b = (hypotheses.h7_side_rows(rows, side, blocks) for side in (comp.a, comp.b))
+    assert {r["experiment"] for r in side_a} == {spec.SLIP_SWEEP_EXPERIMENT}
+    assert {r["experiment"] for r in side_b} == {spec.TIEBREAK_ABLATION_EXPERIMENT}
+    pd = hypotheses.h7_paired([r for r in side_a if r["slip_p"] > 0],
+                              [r for r in side_b if r["slip_p"] > 0], "wasted_moves")
+    assert pd.n_pairs == 2 * 20  # two p > 0 values x 20 maps ...
+    assert pd.n_units == 20      # ... clustered on the map
+    assert pd.mean_diff == pytest.approx(-1.0)
+
+
+def test_h7_not_measured_without_the_ablation_block() -> None:
+    rows = [r for r in _ablation_rows(-1.0, -1.0)
+            if r["experiment"] != spec.TIEBREAK_ABLATION_EXPERIMENT]
+    h7 = _claims(rows)["H7"]
+    assert h7.verdict == WARN
+    assert "not measured" in h7.measured
+    # An "ablation" that does not swap the tie-breaks cannot be paired either.
+    same = [{**r, "planner": ""} for r in _ablation_rows(-1.0, -1.0)]
+    h7 = _claims(same)["H7"]
+    assert h7.verdict == WARN and "not measured" in h7.measured
+
+
+def test_tiebreak_ablation_plot(tmp_path: Path) -> None:
+    rows = _plot_rows(with_blocks=True)
+    path = plots.plot_tiebreak_ablation(rows, tmp_path)
+    assert path is not None and path.name == "tiebreak_ablation.png" and _is_png(path)
+    no_ablation = [r for r in rows if r["experiment"] != spec.TIEBREAK_ABLATION_EXPERIMENT]
+    assert plots.plot_tiebreak_ablation(no_ablation, tmp_path / "none") is None
+    assert not (tmp_path / "none").exists()
+
+
+def test_tiebreak_ablation_plot_uses_h7s_slip_sweep(tmp_path: Path) -> None:
+    # A slip sweep under another name: H7 finds it (fallback picker), and so must the figure.
+    rows = _ablation_rows(-1.0, -1.0, sweep_name="my_sweep")
+    assert hypotheses.pick_slip_experiment(rows, None) == "my_sweep"
+    h7 = _claims(rows)["H7"]
+    assert "not measured" not in h7.measured and "`my_sweep`" in h7.detail
+    path = plots.plot_tiebreak_ablation(rows, tmp_path)
+    assert path is not None and _is_png(path)
+    # With the canonical slip sweep present too, an explicit choice is honoured by both.
+    both = rows + [{**r, "experiment": spec.SLIP_SWEEP_EXPERIMENT} for r in rows
+                   if r["experiment"] == "my_sweep"]
+    assert hypotheses.pick_slip_experiment(both, "my_sweep") == "my_sweep"
+    assert plots.plot_tiebreak_ablation(both, tmp_path / "x", slip_experiment="my_sweep")

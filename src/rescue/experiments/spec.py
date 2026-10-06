@@ -7,21 +7,27 @@ config into a deterministic list of :class:`Task` s, one per map, each of which 
 
 Common random numbers: a task's seed depends **only** on ``(base_seed, scenario, rows, cols,
 replicate)`` (:func:`task_seed`), so the same map and the same outcome / aftershock streams are
-reused across slip p values, sensor radii, replan modes, aftershock q values and all agents:
-every comparison between agents or between parameter values is paired.
+reused across slip p values, sensor radii, replan modes, aftershock q values, planner overrides
+and all agents: every comparison between agents or between parameter values is paired, also
+across blocks (the ``tiebreak_ablation`` block replays the ``slip_sweep`` missions with other
+tie-breaks).
+
+A block's optional ``planner`` mapping overrides :class:`rescue.config.PlannerConfig` fields for
+every agent of the block; its canonical text (:func:`planner_label`, ``''`` for the defaults) is
+the ``planner`` column of ``raw.csv``.
 """
 
 from __future__ import annotations
 
 import zlib
-from collections.abc import Sequence
-from dataclasses import dataclass
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass, field, fields
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 
-from rescue.config import MAPGEN_MIN_SIZE, MAX_SLIP_P, load_yaml
+from rescue.config import MAPGEN_MIN_SIZE, MAX_SLIP_P, PlannerConfig, load_yaml
 
 #: Repository root (``src/rescue/experiments/spec.py`` → three levels up from ``src``).
 REPO_ROOT: Path = Path(__file__).resolve().parents[3]
@@ -35,6 +41,11 @@ DEFAULT_OUT_DIR: Path = Path("results")
 QUICK_OUT_DIR: Path = Path("results") / "quick"
 #: Name of the block holding the main slip-probability sweep (console summary, hypotheses).
 SLIP_SWEEP_EXPERIMENT: str = "slip_sweep"
+#: Name of the block that replays the slip sweep with swapped tie-breaks (H7, ablation plot).
+TIEBREAK_ABLATION_EXPERIMENT: str = "tiebreak_ablation"
+#: ``planner`` column text: ``key=value`` pairs sorted by key, joined by these separators.
+PLANNER_ITEM_SEP: str = ";"
+PLANNER_KV_SEP: str = "="
 #: Replan modes an agent accepts (``rescue.config.AgentConfig``).
 REPLAN_MODES: tuple[str, ...] = ("eager", "lazy")
 #: Defaults of the optional block fields.
@@ -61,6 +72,7 @@ _BLOCK_KEYS: frozenset[str] = frozenset(
         "aftershock_k",
         "agents",
         "n_maps",
+        "planner",
     }
 )
 _REQUIRED_BLOCK_KEYS: frozenset[str] = frozenset({"name", "scenarios", "sizes", "slip_p"})
@@ -70,7 +82,9 @@ _REQUIRED_BLOCK_KEYS: frozenset[str] = frozenset({"name", "scenarios", "sizes", 
 class ExperimentBlock:
     """One factorial block of an experiment (sizes are square: ``rows = cols = size``).
 
-    ``agents`` / ``n_maps`` of ``None`` inherit the config's top-level values.
+    ``agents`` / ``n_maps`` of ``None`` inherit the config's top-level values. ``planner``
+    overrides :class:`~rescue.config.PlannerConfig` fields for every agent of the block (empty:
+    the defaults); it does not change task seeds.
     """
 
     name: str
@@ -83,9 +97,16 @@ class ExperimentBlock:
     aftershock_k: int = DEFAULT_AFTERSHOCK_K
     agents: tuple[str, ...] | None = None
     n_maps: int | None = None
+    planner: Mapping[str, Any] = field(default_factory=dict, hash=False)
 
     def __post_init__(self) -> None:
+        object.__setattr__(self, "planner", dict(sorted(dict(self.planner).items())))
         _validate_block(self)
+
+    @property
+    def planner_label(self) -> str:
+        """Canonical text of :attr:`planner` (the ``planner`` column; ``''`` for defaults)."""
+        return planner_label(self.planner)
 
 
 @dataclass(frozen=True)
@@ -131,6 +152,56 @@ class Task:
     replicate: int
     seed: int
     agents: tuple[str, ...]
+    #: Canonical text of the block's PlannerConfig overrides (``''`` = defaults).
+    planner: str = ""
+    #: The overrides themselves, as sorted ``(field, value)`` pairs (hashable, picklable).
+    planner_overrides: tuple[tuple[str, Any], ...] = ()
+
+    def planner_config(self) -> PlannerConfig:
+        """``PlannerConfig(**overrides)`` of this task."""
+        return PlannerConfig(**dict(self.planner_overrides))
+
+
+# --- planner overrides -----------------------------------------------------------------------
+def _format_override(value: Any) -> str:
+    """YAML-like text of one override value (``true`` / ``false`` / ``null`` / str)."""
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if value is None:
+        return "null"
+    return str(value)
+
+
+def planner_label(overrides: Mapping[str, Any]) -> str:
+    """Canonical text of PlannerConfig overrides: ``'astar_tie_break=diagonal;tie_break=fixed'``.
+
+    Keys sorted; ``''`` for no overrides. Used as the ``planner`` column of ``raw.csv``.
+    """
+    return PLANNER_ITEM_SEP.join(
+        f"{key}{PLANNER_KV_SEP}{_format_override(overrides[key])}" for key in sorted(overrides)
+    )
+
+
+def parse_planner_label(label: str) -> dict[str, str]:
+    """Inverse of :func:`planner_label` as text: ``{field: value text}`` (``{}`` for ``''``)."""
+    out: dict[str, str] = {}
+    text = (label or "").strip()
+    if not text:
+        return out
+    for item in text.split(PLANNER_ITEM_SEP):
+        key, sep, value = item.partition(PLANNER_KV_SEP)
+        if not sep or not key.strip():
+            raise ValueError(f"bad planner label item {item!r} in {label!r}")
+        out[key.strip()] = value.strip()
+    return out
+
+
+def effective_planner_value(label: str, name: str) -> str:
+    """Text of PlannerConfig field ``name`` under the overrides ``label`` (default if absent)."""
+    overrides = parse_planner_label(label)
+    if name in overrides:
+        return overrides[name]
+    return _format_override(getattr(PlannerConfig(), name))
 
 
 # --- validation ------------------------------------------------------------------------------
@@ -194,10 +265,30 @@ def _validate_block(block: ExperimentBlock) -> None:
         if not 0.0 <= q <= 1.0:
             raise ValueError(f"{where}: aftershock_q must be in [0, 1], got {q}")
     _check_count(f"{where} aftershock_k", block.aftershock_k, 0)
+    _check_planner(where, block.planner)
     if block.agents is not None:
         _check_agents(f"{where} agents", block.agents)
     if block.n_maps is not None:
         _check_count(f"{where} n_maps", block.n_maps, 1)
+
+
+def _check_planner(where: str, planner: Mapping[str, Any]) -> None:
+    """PlannerConfig overrides: known fields, scalar values, and a valid PlannerConfig."""
+    allowed = {f.name for f in fields(PlannerConfig)}
+    unknown = sorted(set(planner) - allowed)
+    if unknown:
+        raise ValueError(f"{where}: unknown planner keys {unknown}; choose from "
+                         f"{', '.join(sorted(allowed))}")
+    for key, value in planner.items():
+        if value is not None and not isinstance(value, str | int | float | bool):
+            raise ValueError(f"{where}: planner {key} must be a scalar, got {value!r}")
+        if isinstance(value, str) and (PLANNER_ITEM_SEP in value or PLANNER_KV_SEP in value):
+            raise ValueError(f"{where}: planner {key} value {value!r} contains "
+                             f"{PLANNER_ITEM_SEP!r} or {PLANNER_KV_SEP!r}")
+    try:
+        PlannerConfig(**planner)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{where}: bad planner overrides {dict(planner)}: {exc}") from exc
 
 
 def _validate_config(cfg: ExperimentConfig) -> None:
@@ -266,6 +357,10 @@ def block_from_dict(data: dict[str, Any]) -> ExperimentBlock:
         kwargs["agents"] = _as_tuple(data["agents"], str, f"{label} agents")
     if data.get("n_maps") is not None:
         kwargs["n_maps"] = data["n_maps"]
+    if data.get("planner") is not None:
+        if not isinstance(data["planner"], dict):
+            raise ValueError(f"{label} planner must be a mapping of PlannerConfig fields")
+        kwargs["planner"] = {str(k): v for k, v in data["planner"].items()}
     return ExperimentBlock(**kwargs)
 
 
@@ -312,8 +407,8 @@ def task_seed(base_seed: int, scenario: str, rows: int, cols: int, replicate: in
     """Map and world seed of a task: depends only on these five values (common random numbers).
 
     The seed drives both ``mapgen.generate`` (its own ``SeedSequence([seed, KEY])`` stream, D18)
-    and the ``World`` streams, so every slip p, sensor radius, replan mode, aftershock q and
-    agent sees the same map and the same outcome uniforms.
+    and the ``World`` streams, so every slip p, sensor radius, replan mode, aftershock q,
+    planner override and agent sees the same map and the same outcome uniforms.
     """
     entropy = [int(base_seed), scenario_key(scenario), int(rows), int(cols), int(replicate)]
     return int(np.random.SeedSequence(entropy).generate_state(1)[0])
@@ -330,6 +425,8 @@ def expand_tasks(cfg: ExperimentConfig) -> list[Task]:
     for block in cfg.blocks:
         agents = cfg.block_agents(block)
         n_maps = cfg.block_n_maps(block)
+        planner = block.planner_label
+        overrides = tuple(block.planner.items())
         for scenario in block.scenarios:
             for size in block.sizes:
                 seeds = [task_seed(cfg.base_seed, scenario, size, size, i) for i in range(n_maps)]
@@ -352,6 +449,8 @@ def expand_tasks(cfg: ExperimentConfig) -> list[Task]:
                                             replicate=replicate,
                                             seed=seed,
                                             agents=agents,
+                                            planner=planner,
+                                            planner_overrides=overrides,
                                         )
                                     )
     return tasks
@@ -378,13 +477,17 @@ __all__ = [
     "QUICK_OUT_DIR",
     "REPO_ROOT",
     "SLIP_SWEEP_EXPERIMENT",
+    "TIEBREAK_ABLATION_EXPERIMENT",
     "ExperimentBlock",
     "ExperimentConfig",
     "Task",
     "block_from_dict",
     "config_from_dict",
+    "effective_planner_value",
     "expand_tasks",
     "load_experiment_config",
+    "parse_planner_label",
+    "planner_label",
     "resolve_config_path",
     "scenario_key",
     "subsample_tasks",

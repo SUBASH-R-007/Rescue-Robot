@@ -24,7 +24,7 @@ from collections.abc import Iterable, Sequence
 from pathlib import Path
 from typing import Any
 
-from rescue.config import AftershockConfig, AgentConfig, PlannerConfig, WorldConfig
+from rescue.config import AftershockConfig, AgentConfig, WorldConfig
 from rescue.experiments.spec import (
     REPO_ROOT,
     ExperimentConfig,
@@ -42,6 +42,7 @@ TASK_COLUMNS: tuple[str, ...] = (
     "slip_p",
     "sensor_radius",
     "replan_mode",
+    "planner",
     "aftershock_q",
     "aftershock_k",
     "replicate",
@@ -116,6 +117,7 @@ def _task_fields(task: Task) -> dict[str, Any]:
 def run_task(task: Task) -> list[dict[str, Any]]:
     """Generate the task's map once and run every agent on it; one row per agent.
 
+    Every agent gets ``PlannerConfig(**task's planner overrides)`` (the block's ``planner``).
     Each row = the task fields + every ``MissionMetrics`` field (``failure_reason`` '' on
     success, ``wasted_moves`` NaN on failure) + ``plans_made`` + ``elapsed_ms`` (wall time of
     the mission, construction included). Rows follow ``task.agents`` order.
@@ -126,7 +128,7 @@ def run_task(task: Task) -> list[dict[str, Any]]:
 
     grid = mapgen.generate(task.scenario, task.rows, task.cols, task.seed)
     world_cfg = world_config_for(task)
-    planner_cfg = PlannerConfig()
+    planner_cfg = task.planner_config()
     agent_cfg = AgentConfig(replan_mode=task.replan_mode)  # type: ignore[arg-type]
     base = _task_fields(task)
     rows: list[dict[str, Any]] = []

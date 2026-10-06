@@ -144,3 +144,128 @@ def test_debris_avoided() -> None:
     assert res.path is not None
     assert len(res.path) - 1 == shortest_path_length(passable, (0, 0), (0, 4)) == 12
     _check_path(res.path, passable, (0, 0), (0, 4))
+
+
+# --- tie-break (PlannerConfig.astar_tie_break, docs/plan.md D13 / section 3.7) -----------------
+
+#: Seeded maps of the "default A* unchanged" regression: SHA-256 of ``repr((path,
+#: nodes_expanded))`` for every map, computed with the pre-``tie_break`` implementation (heap
+#: key ``(f, -g, counter)``) before the parameter existed.
+LEGACY_SEED = 424242
+LEGACY_N_MAPS = 400
+LEGACY_DIGEST = "18b9da393c7c1e5c23da95a5a63e0999910f55360cc224391483306ddca83392"
+N_TIE_MAPS = 300
+
+
+def _legacy_maps() -> list[tuple[np.ndarray, Pos, Pos]]:
+    rng = np.random.default_rng(LEGACY_SEED)
+    maps = []
+    for _ in range(LEGACY_N_MAPS):
+        rows, cols = int(rng.integers(2, 16)), int(rng.integers(2, 16))
+        maps.append(random_instance(rng, rows, cols, float(rng.uniform(0.0, 0.35))))
+    return maps
+
+
+def test_default_tie_break_is_bit_identical_to_the_legacy_search() -> None:
+    import hashlib
+
+    digest = hashlib.sha256()
+    for passable, start, goal in _legacy_maps():
+        res = astar(passable, start, goal)
+        assert astar(passable, start, goal, "g") == res  # "g" is the default
+        digest.update(repr((res.path, res.nodes_expanded)).encode())
+    assert digest.hexdigest() == LEGACY_DIGEST
+
+
+def test_diagonal_tie_break_is_optimal_and_changes_paths() -> None:
+    rng = np.random.default_rng(97)
+    solved = differs = 0
+    for _ in range(N_TIE_MAPS):
+        rows, cols = int(rng.integers(2, MAX_SIDE + 1)), int(rng.integers(2, MAX_SIDE + 1))
+        passable, start, goal = random_instance(rng, rows, cols, float(rng.uniform(0.0, 0.35)))
+        diag = astar(passable, start, goal, "diagonal")
+        plain = astar(passable, start, goal, "g")
+        want = shortest_path_length(passable, start, goal)
+        assert 0 <= diag.nodes_expanded <= int(passable.sum())
+        if want is None:
+            assert diag.path is None and plain.path is None
+            continue
+        solved += 1
+        assert diag.path is not None
+        assert len(diag.path) - 1 == want  # heuristic unchanged: still optimal
+        _check_path(diag.path, passable, start, goal)
+        differs += diag.path != plain.path
+        assert astar(passable.copy(), start, goal, "diagonal") == diag  # deterministic
+    assert solved >= 200
+    assert differs > 0
+
+
+def test_diagonal_tie_break_hugs_the_straight_line() -> None:
+    # Open grid: every monotone path is optimal. "g" (FIFO among equal g, neighbours N,E,S,W)
+    # runs along the top edge first (an L); "diagonal" keeps |dr - dc| <= 1 (a staircase).
+    passable = np.ones((6, 6), dtype=bool)
+    plain = astar(passable, (0, 0), (5, 5)).path
+    diag = astar(passable, (0, 0), (5, 5), "diagonal").path
+    assert plain is not None and diag is not None
+    assert len(plain) == len(diag) == 11
+    assert plain[:6] == [(0, c) for c in range(6)]
+    assert all(abs(r - c) <= 1 for r, c in diag)
+
+
+def test_unknown_tie_break_raises() -> None:
+    with pytest.raises(ValueError):
+        astar(np.ones((2, 2), dtype=bool), (0, 0), (1, 1), "random")  # type: ignore[arg-type]
+
+
+def test_planner_config_astar_tie_break_validation() -> None:
+    from rescue.config import PlannerConfig, planner_config_from_dict
+
+    assert PlannerConfig().astar_tie_break == "g"
+    assert PlannerConfig(astar_tie_break="diagonal").astar_tie_break == "diagonal"
+    with pytest.raises(ValueError):
+        PlannerConfig(astar_tie_break="fixed")  # type: ignore[arg-type]
+    loaded = planner_config_from_dict({"astar_tie_break": "diagonal", "tie_break": "fixed"})
+    assert loaded == PlannerConfig(tie_break="fixed", astar_tie_break="diagonal")
+    with pytest.raises(ValueError):
+        planner_config_from_dict({"astar_tie_break": "coin"})
+
+
+@pytest.mark.parametrize("agent_name", ["astar_fixed", "astar_replan"])
+def test_astar_agents_use_the_configured_tie_break(agent_name: str) -> None:
+    from rescue.agents import make_agent
+    from rescue.config import PlannerConfig, WorldConfig
+    from rescue.grid import TrueGrid
+    from rescue.runner import make_transition, run_mission
+    from tests.conftest import open_ascii
+
+    grid = TrueGrid.from_ascii(open_ascii(6, 6, (0, 0), (5, 5)))
+    world = WorldConfig(slip_p=0.0)
+    first_paths = {}
+    for tie in ("g", "diagonal"):
+        agent = make_agent(agent_name, make_transition(grid, world),
+                           PlannerConfig(astar_tie_break=tie))
+        mission = run_mission(grid, agent, world, seed=1)
+        assert mission.metrics().success
+        first_paths[tie] = agent.snapshots[0].path
+        # Optimistic belief at t = 0 on an open map: every cell passable.
+        assert list(first_paths[tie]) == astar(np.ones((6, 6), dtype=bool), (0, 0), (5, 5),
+                                               tie).path
+    assert first_paths["g"] != first_paths["diagonal"]
+
+
+def test_dstar_lite_ignores_the_astar_tie_break() -> None:
+    from rescue.agents import make_agent
+    from rescue.config import PlannerConfig, WorldConfig
+    from rescue.grid import TrueGrid
+    from rescue.runner import make_transition, run_mission
+    from tests.conftest import open_ascii
+
+    grid = TrueGrid.from_ascii(open_ascii(6, 6, (0, 0), (5, 5)))
+    world = WorldConfig(slip_p=0.2)
+    traces = []
+    for tie in ("g", "diagonal"):
+        agent = make_agent("dstar_lite", make_transition(grid, world),
+                           PlannerConfig(astar_tie_break=tie))
+        mission = run_mission(grid, agent, world, seed=3)
+        traces.append([(e.t, e.pos) for e in mission.events])
+    assert traces[0] == traces[1]

@@ -2,9 +2,11 @@
 #
 # Every task = one seeded map; every agent listed runs on it with the same world seed. The seed
 # depends only on (base_seed, scenario, size, replicate), so maps and outcome streams are shared
-# across slip p, sensor radius, replan mode, aftershock q and agents (common random numbers).
+# across slip p, sensor radius, replan mode, aftershock q, planner overrides and agents (common
+# random numbers).
 # Keys per block: name, scenarios, sizes (square), slip_p, and optionally sensor_radius,
-# replan_mode, aftershock_q, aftershock_k, agents, n_maps (the last two default to the top level).
+# replan_mode, aftershock_q, aftershock_k, agents, n_maps (the last two default to the top level)
+# and planner (PlannerConfig overrides for every agent of the block; never changes the seed).
 name: main
 base_seed: 2026
 n_maps: 200
@@ -48,3 +50,14 @@ blocks:
     slip_p: [0.2]
     agents: [andor, astar_replan, dstar_lite, vi_expected]
     n_maps: 50
+
+  # Ablation of H3 (H7): the slip sweep's andor / astar_replan missions replayed with the
+  # tie-breaks swapped (AND-OR fixed N,E,S,W order; A* with the D13 diagonal key). Same scenarios,
+  # sizes, p and n_maps as slip_sweep, and the seed ignores the planner overrides, so every task
+  # pairs 1:1 with a slip_sweep task (same map and outcome stream).
+  - name: tiebreak_ablation
+    scenarios: [random_rubble, collapsed_building, flooded_zone, maze_corridors]
+    sizes: [10, 15, 20]
+    slip_p: [0.0, 0.1, 0.2, 0.3, 0.4]
+    agents: [andor, astar_replan]
+    planner: {tie_break: fixed, astar_tie_break: diagonal}

@@ -17,7 +17,10 @@ into PNGs under ``results/plots/``:
   ``andor − astar_replan`` differences (H3 / H5) with their 95 % CI vs p (common random
   numbers: identical maps and outcome streams);
 * ``sensor_radius.png`` / ``replan_mode.png`` - only when those blocks exist; one row of
-  panels per scenario.
+  panels per scenario;
+* ``tiebreak_ablation.png`` - H7: paired wasted-move differences vs p across the slip sweep and
+  the ``tiebreak_ablation`` block (matched tie-breaks and each tie-break's own effect), map as
+  the unit; only when the ablation block exists.
 
 Blocks are found by the factor they sweep (a block name containing a keyword such as
 ``slip`` / ``scal`` / ``aftershock`` wins ties), and the factors a block does not sweep are held
@@ -46,6 +49,7 @@ from matplotlib.ticker import FuncFormatter, LogLocator, NullFormatter
 from rescue.agents import ALL_AGENT_NAMES
 from rescue.config import DEFAULT_SENSOR_RADIUS
 from rescue.experiments.run import read_run_meta
+from rescue.experiments.spec import TIEBREAK_ABLATION_EXPERIMENT
 from rescue.experiments.stats import TASK_KEYS, mean_ci, paired_difference, wilson_interval
 from rescue.mapgen import SCENARIOS
 
@@ -156,6 +160,7 @@ BASELINE: dict[str, Any] = {
     "sensor_radius": DEFAULT_SENSOR_RADIUS,
     "replan_mode": "eager",
     "aftershock_q": 0.0,
+    "planner": "",
 }
 #: The paired comparison of the H3 claim.
 PAIRED_AGENTS: tuple[str, str] = ("andor", "astar_replan")
@@ -1039,6 +1044,72 @@ def plot_replan_mode(rows: Sequence[Row], out_dir: Path) -> Path | None:
                         "Eager vs lazy replanning", "replan mode", str, connect=False)
 
 
+#: File of the H7 tie-break ablation figure, and its panel titles keyed by comparison name.
+TIEBREAK_FILE: str = "tiebreak_ablation.png"
+TIEBREAK_PANEL_TITLES: dict[str, str] = {
+    "(a) matched, diagonal": "(a) andor − astar_replan, both diagonal",
+    "(b) matched, plain": "(b) andor fixed − astar_replan larger-g",
+    "(c) andor diagonal − fixed": "(c) andor: diagonal − fixed",
+    "(d) A* diagonal − g": "(d) astar_replan: diagonal − larger-g",
+}
+
+
+def plot_tiebreak_ablation(
+    rows: Sequence[Row], out_dir: Path, slip_experiment: str | None = None
+) -> Path | None:
+    """H7: paired wasted-move differences vs p for the four tie-break comparisons.
+
+    Each panel pairs runs of the slip sweep with runs of the ``tiebreak_ablation`` block on the
+    same map and outcome stream (``hypotheses.h7_paired``; map as the unit). The slip sweep is
+    chosen exactly as H7 chooses it (``hypotheses.pick_slip_experiment``, honouring
+    ``slip_experiment``), so the figure and the H7 table always use the same pair of blocks.
+    Skipped when either block or one of the four agent / tie-break combinations is missing.
+    """
+    from rescue.experiments import hypotheses as hyp
+
+    sweep_name = hyp.pick_slip_experiment(rows, slip_experiment)
+    if sweep_name is None:
+        return None
+    blocks = (sweep_name, TIEBREAK_ABLATION_EXPERIMENT)
+    present = {str(r.get("experiment", "")) for r in rows}
+    if not set(blocks) <= present:
+        return None
+    comparisons = [c for c in hyp.H7_COMPARISONS if c.name in TIEBREAK_PANEL_TITLES]
+    sides = {side: hyp.h7_side_rows(rows, side, blocks)
+             for c in comparisons for side in (c.a, c.b)}
+    if any(not sub or len({r["experiment"] for r in sub}) > 1 for sub in sides.values()):
+        return None
+    x_values = _distinct([r for sub in sides.values() for r in sub], "slip_p")
+    pos = _positions(x_values)
+    fig, axes = _new_figure(len(comparisons), sharey=True)
+    counts: list[int] = []
+    for ax, comp in zip(axes, comparisons, strict=True):
+        points = []
+        for x in x_values:
+            diff = hyp.h7_paired([r for r in sides[comp.a] if r["slip_p"] == x],
+                                 [r for r in sides[comp.b] if r["slip_p"] == x], "wasted_moves")
+            if diff.n_pairs and not math.isnan(diff.mean_diff):
+                points.append(_Point(x, diff.mean_diff, diff.lo, diff.hi, diff.n_units))
+        counts.extend(p.n for p in points)
+        ax.axhline(0.0, color=ZERO_LINE_COLOUR, linewidth=ZERO_LINE_WIDTH, zorder=1)
+        _draw_series(ax, points, pos, 0.0, NEUTRAL_SERIES, "o", "-")
+        ax.set_xticks([pos[v] for v in x_values])
+        ax.set_xticklabels([_fmt_num(v) for v in x_values])
+        ax.set_title(TIEBREAK_PANEL_TITLES[comp.name], color=TEXT_COLOUR,
+                     fontsize=PANEL_TITLE_SIZE, loc="left")
+    if not counts:
+        return None
+    pooled_rows = sides[comparisons[0].a]
+    subtitle = (f"below 0 = the first term wastes fewer moves; {sweep_name} runs "
+                f"paired with {TIEBREAK_ABLATION_EXPERIMENT} runs on identical maps and outcome "
+                f"streams, where both succeeded; (a)+(b) compare the agents with matched "
+                f"tie-breaks, (c)+(d) each tie-break's own effect; "
+                f"{_n_text(counts, 'maps per point')}; {MEAN_CI_TEXT} (map as the unit); "
+                f"{_pooled_text(pooled_rows, 'slip_p')}")
+    return _finish(fig, axes, "Tie-break ablation: paired wasted-move differences", subtitle,
+                   [], P_LABEL, "Δ wasted moves per mission", out_dir / TIEBREAK_FILE)
+
+
 def plots_dir(out_dir: str | Path) -> Path:
     """The PNG directory: ``out_dir`` itself if it is named ``plots``, else ``out_dir/plots``."""
     out = Path(out_dir)
@@ -1067,6 +1138,7 @@ def make_all_plots(rows: Sequence[Row], out_dir: str | Path) -> list[Path]:
         *(plot_paired(rows, target, metric) for metric in PAIRED_METRICS),
         plot_sensor_radius(rows, target),
         plot_replan_mode(rows, target),
+        plot_tiebreak_ablation(rows, target),
     ]
     return [path for path in paths if path is not None]
 
@@ -1087,5 +1159,6 @@ __all__ = [
     "plot_sensor_radius",
     "plot_success_under_aftershocks",
     "plot_success_vs_p",
+    "plot_tiebreak_ablation",
     "plots_dir",
 ]

@@ -6,7 +6,7 @@ inconclusive or not measured) and the numbers behind it; :func:`write_hypotheses
 as Markdown with a header from ``run_meta.json``. Claims are evaluated as stated — thresholds
 come from the deck, never from the data — and failed claims are reported as failed.
 
-Claims (H1–H3 from the deck, H4 deck narrative, H5 derived, H6 reference):
+Claims (H1–H3 from the deck, H4 deck narrative, H5 derived, H6 reference, H7 ablation of H3):
 
 * **H1** ``andor`` succeeds in ≥ 95 % of missions at p = 0.3 (slip sweep; Wilson 95 % CI).
 * **H2** ``andor`` never reaches an unplanned state (Σ over every ``andor`` run; bumps too).
@@ -14,10 +14,13 @@ Claims (H1–H3 from the deck, H4 deck narrative, H5 derived, H6 reference):
 * **H4** ``astar_fixed`` fails the first time an action misbehaves.
 * **H5** ``andor`` replans less than ``astar_replan`` (paired, p > 0).
 * **H6** ``vi_expected`` (expected-steps optimal) vs ``andor`` steps (paired, informational).
+* **H7** H3's wasted-move advantage survives matched tie-breaking (``tiebreak_ablation`` block
+  paired with the slip sweep across blocks, map as the unit).
 """
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import math
 from collections import Counter
@@ -32,9 +35,17 @@ from rescue.agents import (
     ReplanAStarAgent,
     ValueIterationAgent,
 )
-from rescue.config import DEFAULT_SENSOR_RADIUS, DEFAULT_TERRAIN_HIGH_P
+from rescue.config import (
+    DEFAULT_SENSOR_RADIUS,
+    DEFAULT_TERRAIN_HIGH_P,
+    EQUIVALENCE_MARGIN_MOVES,
+)
 from rescue.experiments.run import META_FILE
-from rescue.experiments.spec import SLIP_SWEEP_EXPERIMENT
+from rescue.experiments.spec import (
+    SLIP_SWEEP_EXPERIMENT,
+    TIEBREAK_ABLATION_EXPERIMENT,
+    effective_planner_value,
+)
 from rescue.experiments.stats import (
     DEFAULT_CONFIDENCE,
     MAP_KEYS,
@@ -74,6 +85,20 @@ VI_EXPECTED: str = ValueIterationAgent.name
 #: Default experimental condition of the slip sweep (other conditions have their own blocks).
 DEFAULT_REPLAN_MODE: str = "eager"
 DEFAULT_AFTERSHOCK_Q: float = 0.0
+#: ``planner`` column of runs with the default PlannerConfig.
+DEFAULT_PLANNER: str = ""
+
+#: H7: columns that pair a slip-sweep run with an ablation run of the same mission (the
+#: experiment and the planner overrides differ by design), and the map identity used as the
+#: unit of analysis (the H3 clustering without the experiment name).
+H7_PAIR_KEYS: tuple[str, ...] = (
+    "scenario", "rows", "cols", "slip_p", "sensor_radius", "replan_mode", "aftershock_q",
+    "replicate", "seed",
+)
+H7_MAP_KEYS: tuple[str, ...] = ("scenario", "rows", "cols", "replicate", "seed")
+#: H7: PlannerConfig fields holding the AND-OR (D13) and the A* tie-breaks.
+ANDOR_TIE_FIELD: str = "tie_break"
+ASTAR_TIE_FIELD: str = "astar_tie_break"
 
 #: Metadata file written by ``run.run_experiments`` next to ``raw.csv``.
 RUN_META_FILE: str = META_FILE
@@ -177,7 +202,7 @@ def _of(rows: Sequence[dict[str, Any]], agent: str) -> list[dict[str, Any]]:
     return [r for r in rows if r["agent"] == agent]
 
 
-def _is_default_condition(row: dict[str, Any]) -> bool:
+def _is_default_world(row: dict[str, Any]) -> bool:
     """Default radius, eager replanning and no aftershocks."""
     return (
         row["sensor_radius"] == DEFAULT_SENSOR_RADIUS
@@ -186,7 +211,12 @@ def _is_default_condition(row: dict[str, Any]) -> bool:
     )
 
 
-def _pick_slip_experiment(rows: Sequence[dict[str, Any]], preferred: str | None) -> str | None:
+def _is_default_condition(row: dict[str, Any]) -> bool:
+    """Default radius, eager replanning, no aftershocks and the default planner config."""
+    return _is_default_world(row) and row.get("planner", DEFAULT_PLANNER) == DEFAULT_PLANNER
+
+
+def pick_slip_experiment(rows: Sequence[dict[str, Any]], preferred: str | None) -> str | None:
     """Name of the slip-sweep experiment.
 
     ``preferred`` (if given and present), else :data:`SLIP_SWEEP_EXPERIMENT`, else the
@@ -213,7 +243,7 @@ def _sweep(
     rows: Sequence[dict[str, Any]], preferred: str | None
 ) -> tuple[str | None, list[dict[str, Any]], str]:
     """(experiment name, its default-condition rows, a scope sentence for the details)."""
-    name = _pick_slip_experiment(rows, preferred)
+    name = pick_slip_experiment(rows, preferred)
     if name is None:
         return None, [], "no slip-sweep experiment in the data"
     sub = [r for r in rows if r["experiment"] == name]
@@ -222,7 +252,7 @@ def _sweep(
     if default and len(default) < len(sub):
         note = (
             f" (restricted to r = {DEFAULT_SENSOR_RADIUS}, {DEFAULT_REPLAN_MODE} replanning, "
-            "no aftershocks)"
+            "no aftershocks, default planner)"
         )
     elif not default:
         default = sub
@@ -244,8 +274,8 @@ def _mission_key(row: dict[str, Any]) -> tuple[Any, ...]:
     q = round(float(row["aftershock_q"]), 9)
     return (
         row["agent"], row["scenario"], row["rows"], row["cols"], row["seed"],
-        round(float(row["slip_p"]), 9), row["sensor_radius"], row["replan_mode"], q,
-        row["aftershock_k"] if q > 0.0 else None,
+        round(float(row["slip_p"]), 9), row["sensor_radius"], row["replan_mode"],
+        row.get("planner", DEFAULT_PLANNER), q, row["aftershock_k"] if q > 0.0 else None,
     )
 
 
@@ -345,7 +375,7 @@ def _h2(rows: Sequence[dict[str, Any]]) -> Hypothesis:
         f"Blocks share task seeds (the seed depends only on scenario, size and replicate), so a "
         "block's default-condition runs replay missions of other blocks exactly (same map, "
         "outcome stream and parameters). Deduplicated on (scenario, size, seed, p, r, replan "
-        f"mode, q, k), the {len(runs)} runs are {unique} unique missions.",
+        f"mode, planner overrides, q, k), the {len(runs)} runs are {unique} unique missions.",
     ]
     vi = _of(rows, VI_EXPECTED)
     if vi:
@@ -542,28 +572,337 @@ def _h6(rows: Sequence[dict[str, Any]], sweep_name: str | None) -> Hypothesis:
     return Hypothesis(hyp.claim, hyp.verdict, hyp.measured, f"{hyp.detail}\n\n{extra}", "H6")
 
 
+@dataclass(frozen=True)
+class _Side:
+    """One side of an H7 comparison: an agent run with one value of one tie-break field."""
+
+    agent: str
+    field: str
+    value: str
+
+    @property
+    def text(self) -> str:
+        return f"`{self.agent}` {self.field}={self.value}"
+
+
+@dataclass(frozen=True)
+class _Comparison:
+    """An H7 paired difference ``a − b`` with a short name for the tables."""
+
+    name: str
+    a: _Side
+    b: _Side
+
+
+#: The four H7 comparisons (two matched, two single-factor) plus the unmatched H3 reference.
+_AD = _Side(ANDOR, ANDOR_TIE_FIELD, "diagonal")
+_AF = _Side(ANDOR, ANDOR_TIE_FIELD, "fixed")
+_RD = _Side(ASTAR_REPLAN, ASTAR_TIE_FIELD, "diagonal")
+_RG = _Side(ASTAR_REPLAN, ASTAR_TIE_FIELD, "g")
+H7_MATCHED_DIAGONAL = _Comparison("(a) matched, diagonal", _AD, _RD)
+H7_MATCHED_PLAIN = _Comparison("(b) matched, plain", _AF, _RG)
+H7_ANDOR_EFFECT = _Comparison("(c) andor diagonal − fixed", _AD, _AF)
+H7_ASTAR_EFFECT = _Comparison("(d) A* diagonal − g", _RD, _RG)
+H7_UNMATCHED = _Comparison("(H3) unmatched", _AD, _RG)
+H7_COMPARISONS: tuple[_Comparison, ...] = (
+    H7_MATCHED_DIAGONAL, H7_MATCHED_PLAIN, H7_ANDOR_EFFECT, H7_ASTAR_EFFECT, H7_UNMATCHED,
+)
+
+
+def h7_side_rows(
+    rows: Sequence[dict[str, Any]], side: _Side, experiments: Sequence[str]
+) -> list[dict[str, Any]]:
+    """Default-world rows of ``experiments`` whose agent runs with ``side``'s tie-break."""
+    return [
+        r for r in rows
+        if r["experiment"] in experiments and r["agent"] == side.agent and _is_default_world(r)
+        and effective_planner_value(r.get("planner", DEFAULT_PLANNER), side.field) == side.value
+    ]
+
+
+def h7_paired(
+    side_a: Sequence[dict[str, Any]], side_b: Sequence[dict[str, Any]], metric: str
+) -> PairedDifference:
+    """Paired ``a − b`` across blocks on :data:`H7_PAIR_KEYS`, map (:data:`H7_MAP_KEYS`) as
+    the unit."""
+    tagged = [{**r, "agent": "a"} for r in side_a] + [{**r, "agent": "b"} for r in side_b]
+    return paired_difference(tagged, metric, "a", "b", H7_PAIR_KEYS, cluster_keys=H7_MAP_KEYS)
+
+
+def _half_width(pd: PairedDifference) -> float:
+    """Half the width of ``pd``'s confidence interval (NaN if undefined)."""
+    return (pd.hi - pd.lo) / 2.0
+
+
+def _equivalent(pd: PairedDifference, margin: float) -> bool:
+    """The CI of ``pd`` lies entirely inside ``[-margin, +margin]`` (TOST-style equivalence)."""
+    return (pd.n_pairs >= 2 and not math.isnan(pd.lo) and not math.isnan(pd.hi)
+            and -margin <= pd.lo and pd.hi <= margin)
+
+
+def _h7_verdict(
+    diagonal: PairedDifference,
+    plain: PairedDifference,
+    margin: float = EQUIVALENCE_MARGIN_MOVES,
+) -> str:
+    """✅ both matched CIs below 0; ❌ either above 0, or both inside ±``margin``
+    (equivalence: no advantage once tie-breaking is matched); ⚠️ otherwise."""
+    verdicts = (_diff_verdict(diagonal), _diff_verdict(plain))
+    if verdicts == (VERDICT_PASS, VERDICT_PASS):
+        return VERDICT_PASS
+    if VERDICT_FAIL in verdicts or (_equivalent(diagonal, margin)
+                                    and _equivalent(plain, margin)):
+        return VERDICT_FAIL
+    return VERDICT_WARN
+
+
+#: H7 manipulation check: the run metrics that must agree for two paired runs to count as
+#: having followed the same trajectory (a cheap proxy for identical paths).
+H7_TRAJECTORY_METRICS: tuple[str, ...] = ("steps", "cells_explored")
+
+
+def h7_identical_share(
+    side_a: Sequence[dict[str, Any]], side_b: Sequence[dict[str, Any]]
+) -> tuple[int, int]:
+    """(pairs with identical :data:`H7_TRAJECTORY_METRICS`, all pairs) across blocks.
+
+    Pairs on :data:`H7_PAIR_KEYS` like :func:`h7_paired`, but over every paired run (successful
+    or not): a manipulation check of how far a "matched" tie-break really makes the two agents
+    walk the same route.
+    """
+    by_key = {tuple(r[k] for k in H7_PAIR_KEYS): r for r in side_b}
+    same = total = 0
+    for ra in side_a:
+        rb = by_key.get(tuple(ra[k] for k in H7_PAIR_KEYS))
+        if rb is None:
+            continue
+        total += 1
+        same += all(ra[m] == rb[m] for m in H7_TRAJECTORY_METRICS)
+    return same, total
+
+
+def _h7(rows: Sequence[dict[str, Any]], sweep_name: str | None) -> Hypothesis:
+    claim = (f"`{ANDOR}`'s wasted-move advantage over `{ASTAR_REPLAN}` survives matched "
+             "tie-breaking")
+    names = _values(rows, "experiment") if rows else []
+    if sweep_name is None:
+        return _not_measured("H7", claim, "no slip-sweep experiment in the data")
+    if TIEBREAK_ABLATION_EXPERIMENT not in names:
+        return _not_measured("H7", claim, f"no `{TIEBREAK_ABLATION_EXPERIMENT}` block")
+    blocks = (sweep_name, TIEBREAK_ABLATION_EXPERIMENT)
+    sides: dict[_Side, list[dict[str, Any]]] = {}
+    for side in (_AD, _AF, _RD, _RG):
+        sub = h7_side_rows(rows, side, blocks)
+        if not sub:
+            return _not_measured("H7", claim, f"no {side.text} runs in `{blocks[0]}` or "
+                                              f"`{blocks[1]}`")
+        if len({r["experiment"] for r in sub}) > 1:
+            return _not_measured("H7", claim, f"{side.text} runs in both `{blocks[0]}` and "
+                                              f"`{blocks[1]}` (the ablation must swap the "
+                                              "tie-breaks)")
+        sides[side] = sub
+
+    def paired(comp: _Comparison, keep: Callable[[dict[str, Any]], bool]) -> PairedDifference:
+        return h7_paired([r for r in sides[comp.a] if keep(r)],
+                         [r for r in sides[comp.b] if keep(r)], "wasted_moves")
+
+    def positive(r: dict[str, Any]) -> bool:
+        return float(r["slip_p"]) > SLIP_P_TOL
+
+    pooled = {comp: paired(comp, positive) for comp in H7_COMPARISONS}
+    diag, plain = pooled[H7_MATCHED_DIAGONAL], pooled[H7_MATCHED_PLAIN]
+    if diag.n_pairs == 0 or plain.n_pairs == 0:
+        return _not_measured("H7", claim, "no paired matched-tie-break runs at p > 0")
+    verdict = _h7_verdict(diag, plain)
+
+    def short(pd: PairedDifference) -> str:
+        if pd.n_pairs == 0:
+            return "—"
+        return f"{_num(pd.mean_diff)} [{_num(pd.lo)}, {_num(pd.hi)}] {_diff_verdict(pd)}"
+
+    margin = EQUIVALENCE_MARGIN_MOVES
+    measured = (
+        f"matched diagonal {short(diag)} (CI ±{_half_width(diag):.{_NUM_DIGITS}f}), matched "
+        f"plain {short(plain)} (CI ±{_half_width(plain):.{_NUM_DIGITS}f}) moves over p > 0 "
+        f"({diag.n_units} maps; equivalence margin ±{margin:g}); single-factor effects: andor "
+        "diagonal − fixed "
+        f"{short(pooled[H7_ANDOR_EFFECT])}, A* diagonal − g {short(pooled[H7_ASTAR_EFFECT])}; "
+        f"unmatched (H3) {short(pooled[H7_UNMATCHED])}"
+    )
+    manipulation = [(c, h7_identical_share([r for r in sides[c.a] if not positive(r)],
+                                           [r for r in sides[c.b] if not positive(r)]),
+                     h7_identical_share([r for r in sides[c.a] if positive(r)],
+                                        [r for r in sides[c.b] if positive(r)]))
+                    for c in (H7_MATCHED_DIAGONAL, H7_MATCHED_PLAIN, H7_UNMATCHED)]
+    measured += "; identical steps + cells explored at p > 0: " + ", ".join(
+        f"{c.name.split(' ')[0]} {_share(*at_pos)}" for c, _, at_pos in manipulation
+    ) + " (tie-break matching is approximate)"
+    measured += f"; {_h7_reason(diag, plain, verdict, margin)}"
+    high = _high_slip_note([r for side in sides.values() for r in side if not positive(r)])
+    sources = {side: sides[side][0]["experiment"] for side in sides}
+    defs = _table(
+        ["comparison", "a", "b"],
+        [[c.name, f"{c.a.text} (`{sources[c.a]}`)", f"{c.b.text} (`{sources[c.b]}`)"]
+         for c in H7_COMPARISONS],
+    )
+    header = ["maps", "pairs", "mean diff", "95 % CI", "paired t p", "Wilcoxon p", "verdict"]
+    overall = [[c.name, pd.n_units, pd.n_pairs, _num(pd.mean_diff),
+                f"[{_num(pd.lo)}, {_num(pd.hi)}]", _pval(pd.p_value), _pval(pd.p_wilcoxon),
+                _diff_verdict(pd)] for c, pd in pooled.items()]
+    p_values = _values([r for side in sides.values() for r in side], "slip_p")
+    by_p = []
+    for p in p_values:
+        label = _p_label(p) + ("" if p > SLIP_P_TOL else " (not in the verdict)")
+        by_p.append([label, *(short(paired(c, lambda r, p=p: _is_p(r, p)))
+                              for c in H7_COMPARISONS)])
+    scenarios = _values([r for r in sides[_AD] if positive(r)], "scenario")
+    by_scenario = [
+        [s, *(short(paired(c, lambda r, s=s: positive(r) and r["scenario"] == s))
+              for c in H7_COMPARISONS)]
+        for s in scenarios
+    ]
+    columns = [c.name for c in H7_COMPARISONS]
+    detail = "\n\n".join([
+        f"Experiments `{blocks[0]}` (default planner: AND-OR D13 diagonal tie-break, A* larger-g "
+        f"then FIFO) and `{blocks[1]}` (the same missions with the tie-breaks swapped), "
+        f"restricted to r = {DEFAULT_SENSOR_RADIUS}, {DEFAULT_REPLAN_MODE} replanning, no "
+        "aftershocks. Task seeds do not depend on the planner overrides, so every ablation run "
+        "pairs 1:1 with the slip-sweep run of the same map, outcome stream and slip p (pairing "
+        f"across blocks on {', '.join(H7_PAIR_KEYS)}).",
+        "Why: at p = 0 nothing slips except on high-slip '~' terrain, which keeps its own "
+        f"slip parameter ({DEFAULT_TERRAIN_HIGH_P:g}) at every block p ({high}); everywhere "
+        "else AND-OR has no contingency to plan for and reduces to a greedy shortest-route "
+        "search on the optimistic belief, so a difference there (H3's p = 0 row; the (H3) "
+        "column of the p = 0 row below) is path choice, not contingency planning. Under the "
+        "optimistic-unknown assumption many routes are equally short, and which one an agent "
+        "takes (its tie-break) decides how often it walks into unseen debris. (a) and (b) "
+        "compare the agents with matched tie-breaks (only approximately matched: see the "
+        "manipulation check below); (c) and (d) measure each tie-break's own effect. On "
+        "common pairs H3 = (a) + (d) = (b) + (c) (approximately here, since each difference "
+        "uses the runs where both of its sides succeeded).",
+        defs,
+        "Difference = a − b in wasted moves (successful runs on both sides), map as the unit "
+        "(per-map mean over the p > 0 values, as in H3); Student-t 95 % CI, paired t-test and "
+        "Wilcoxon signed-rank test over maps. Rule: ✅ if the CIs of both matched comparisons "
+        "(a) and (b) lie below 0 over p > 0; ❌ if either lies above 0, or if both lie entirely "
+        f"inside ±{margin:g} moves (equivalence margin fixed a priori, TOST-style: no "
+        "practically relevant advantage once tie-breaking is matched); ⚠️ otherwise (a CI "
+        "contains 0 but is too wide to show equivalence: underpowered, not refuted). p = 0 is "
+        "shown separately and is not part of the verdict. CI half-widths: (a) "
+        f"±{_half_width(diag):.{_NUM_DIGITS}f}, (b) ±{_half_width(plain):.{_NUM_DIGITS}f} "
+        "moves.",
+        "Pooled over p > 0:",
+        _table(["comparison", *header], overall),
+        "By slip p (mean diff [95 % CI] verdict; one pair per map):",
+        _table(["slip p", *columns], by_p),
+        "By scenario (p > 0, map as the unit):",
+        _table(["scenario", *columns], by_scenario),
+        "Manipulation check (the tie-break matching is approximate): A* orders its open list "
+        "by f = g + Manhattan h first, then larger g, and only then by `diag` (D13), and "
+        "rebuilds its path from the parent pointer of each node's first cheapest generator; "
+        "AND-OR orders actions forward by BFS distance on the belief, then by `diag` of the "
+        "intended target. Near belief obstacles the two can still pick different equally "
+        "short routes. Share of paired runs (successful or not) whose steps and cells "
+        "explored are both identical (a proxy for the same trajectory):",
+        _table(["comparison", "p = 0", "p > 0"],
+               [[c.name, _share(*at_zero), _share(*at_pos)]
+                for c, at_zero, at_pos in manipulation]),
+    ])
+    return Hypothesis(claim, verdict, measured, detail, "H7")
+
+
+def _share(same: int, total: int) -> str:
+    """'96.0% (77/80)' ('n/a' without pairs)."""
+    return f"{_pct(same / total)} ({same}/{total})" if total else "n/a"
+
+
+def _h7_reason(
+    diag: PairedDifference, plain: PairedDifference, verdict: str, margin: float
+) -> str:
+    """Why H7 got ``verdict``: supported, refuted, equivalent or underpowered."""
+    if verdict == VERDICT_PASS:
+        return "both matched CIs below 0"
+    if VERDICT_FAIL in (_diff_verdict(diag), _diff_verdict(plain)):
+        return "refuted: a matched CI lies above 0"
+    if verdict == VERDICT_FAIL:
+        return (f"refuted: both matched CIs inside ±{margin:g} moves (no advantage once "
+                "tie-breaking is matched)")
+    return f"inconclusive: a matched CI is neither below 0 nor inside ±{margin:g} moves"
+
+
+def _high_slip_scenarios(at_zero: Sequence[dict[str, Any]]) -> list[str]:
+    """Scenarios with a slip or skid in some run at p = 0 (high-slip '~' terrain)."""
+    return _values([r for r in at_zero if int(r["slips"]) + int(r["skids"]) > 0], "scenario")
+
+
+def _high_slip_note(at_zero: Sequence[dict[str, Any]]) -> str:
+    """Where runs at p = 0 still slipped (e.g. 'only in flooded_zone here: 975/1200 …')."""
+    scenarios = _high_slip_scenarios(at_zero)
+    if not scenarios:
+        return "no run at p = 0 had a slip or skid in this data"
+    sub = [r for r in at_zero if r["scenario"] in scenarios]
+    k = sum(1 for r in sub if int(r["slips"]) + int(r["skids"]) > 0)
+    return (f"only in {', '.join(scenarios)} here: {k}/{len(sub)} of the runs there at p = 0 "
+            "had a slip or skid")
+
+
+def _h3_ablation_note(sweep: list[dict[str, Any]]) -> str:
+    """H3's p = 0 baseline (all scenarios, and without high-slip terrain) and a pointer to H7."""
+    at_zero = [r for r in sweep if _is_p(r, 0.0) and r["agent"] in (ANDOR, ASTAR_REPLAN)]
+    pd = paired_difference(at_zero, "wasted_moves", ANDOR, ASTAR_REPLAN, TASK_KEYS)
+    if not pd.n_pairs:
+        return (f"No paired runs at p = 0, so the no-contingency baseline (where `{ANDOR}` "
+                "reduces to a greedy shortest-route search) is not measured; H7 repeats the "
+                "comparison with matched tie-breaking.")
+    high = _high_slip_scenarios(at_zero)
+    text = (
+        "At p = 0 nothing slips except on high-slip '~' terrain, which keeps its own slip "
+        f"parameter ({DEFAULT_TERRAIN_HIGH_P:g}) at every block p ({_high_slip_note(at_zero)}); "
+        f"elsewhere `{ANDOR}` has no contingency to plan for and reduces to a greedy "
+        "shortest-route search on the optimistic belief. The p = 0 difference is already "
+        f"{_num(pd.mean_diff)} [{_num(pd.lo)}, {_num(pd.hi)}] moves over {pd.n_units} maps "
+        "(row p = 0 above)"
+    )
+    if high:
+        clean = paired_difference([r for r in at_zero if r["scenario"] not in high],
+                                  "wasted_moves", ANDOR, ASTAR_REPLAN, TASK_KEYS)
+        text += f"; without {', '.join(high)} (the clean no-contingency baseline) it is " + (
+            f"{_num(clean.mean_diff)} [{_num(clean.lo)}, {_num(clean.hi)}] moves over "
+            f"{clean.n_units} maps" if clean.n_pairs else "not measured (no other scenario)"
+        )
+    return text + (
+        ". So part of the gap is path choice under the optimistic-unknown assumption "
+        "(different tie-breaks), not contingency planning; H7 repeats the comparison with "
+        "matched tie-breaking."
+    )
+
+
 def evaluate(
     rows: Sequence[dict[str, Any]], slip_experiment: str | None = None
 ) -> list[Hypothesis]:
-    """Verdicts H1–H6 on typed raw rows; missing blocks / agents give ⚠️ 'not measured'.
+    """Verdicts H1–H7 on typed raw rows; missing blocks / agents give ⚠️ 'not measured'.
 
     ``slip_experiment`` overrides the slip-sweep experiment (default
     :data:`SLIP_SWEEP_EXPERIMENT`, else the experiment sweeping the most p values).
     """
     name, sweep, scope = _sweep(rows, slip_experiment)
+    h3 = _paired_claim(
+        "H3", f"`{ANDOR}` wastes fewer moves than `{ASTAR_REPLAN}`", sweep, scope,
+        "wasted_moves", ANDOR, ASTAR_REPLAN, "moves", "both successful",
+    )
+    if not h3.measured.startswith(NOT_MEASURED):
+        h3 = dataclasses.replace(h3, detail=f"{h3.detail}\n\n{_h3_ablation_note(sweep)}")
     results = [
         _h1(sweep, scope),
         _h2(rows),
-        _paired_claim(
-            "H3", f"`{ANDOR}` wastes fewer moves than `{ASTAR_REPLAN}`", sweep, scope,
-            "wasted_moves", ANDOR, ASTAR_REPLAN, "moves", "both successful",
-        ),
+        h3,
         _h4(sweep, scope),
         _paired_claim(
             "H5", f"`{ANDOR}` replans less often than `{ASTAR_REPLAN}`", sweep, scope,
             "replans", ANDOR, ASTAR_REPLAN, "replans", "all runs",
         ),
         _h6(rows, name),
+        _h7(rows, name),
     ]
     return results
 
@@ -666,6 +1005,10 @@ def write_hypotheses(
 __all__ = [
     "H1_SLIP_P",
     "H1_TARGET",
+    "H7_COMPARISONS",
+    "H7_MAP_KEYS",
+    "H7_PAIR_KEYS",
+    "H7_TRAJECTORY_METRICS",
     "NOT_MEASURED",
     "RUN_META_FILE",
     "VERDICT_FAIL",
@@ -673,6 +1016,10 @@ __all__ = [
     "VERDICT_WARN",
     "Hypothesis",
     "evaluate",
+    "h7_identical_share",
+    "h7_paired",
+    "h7_side_rows",
+    "pick_slip_experiment",
     "render_markdown",
     "write_hypotheses",
 ]
