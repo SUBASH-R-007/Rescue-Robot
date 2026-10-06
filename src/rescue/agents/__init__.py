@@ -1,4 +1,9 @@
-"""Agents: the AND-OR contingency agent and the two A* baselines (docs/plan.md §3.8)."""
+"""Agents: the AND-OR contingency agent, the two A* baselines and the stretch agents.
+
+docs/plan.md §3.8. ``AGENT_NAMES`` are the three agents the UI and the head-to-head comparison
+show; ``STRETCH_AGENT_NAMES`` are the brief §5 stretch agents (``dstar_lite``,
+``vi_expected``); ``make_agent`` builds any of ``ALL_AGENT_NAMES``.
+"""
 
 from __future__ import annotations
 
@@ -15,6 +20,8 @@ from rescue.agents.base import (
     PlanSnapshot,
 )
 from rescue.agents.contingency import ContingencyAgent
+from rescue.agents.dstar_lite import DStarLiteAgent
+from rescue.agents.vi_expected import ValueIterationAgent
 from rescue.config import AgentConfig, PlannerConfig
 from rescue.model import TransitionModel
 
@@ -25,9 +32,25 @@ AGENT_NAMES: tuple[str, ...] = (
     ReplanAStarAgent.name,
 )
 
+#: Stretch agents (brief §5), not part of the UI's agent cycle.
+STRETCH_AGENT_NAMES: tuple[str, ...] = (
+    DStarLiteAgent.name,
+    ValueIterationAgent.name,
+)
+
+#: Every agent ``make_agent`` can build, in display order.
+ALL_AGENT_NAMES: tuple[str, ...] = AGENT_NAMES + STRETCH_AGENT_NAMES
+
 #: Registry: agent id → agent class.
 AGENTS: dict[str, type[Agent]] = {
-    cls.name: cls for cls in (ContingencyAgent, FixedAStarAgent, ReplanAStarAgent)
+    cls.name: cls
+    for cls in (
+        ContingencyAgent,
+        FixedAStarAgent,
+        ReplanAStarAgent,
+        DStarLiteAgent,
+        ValueIterationAgent,
+    )
 }
 
 
@@ -41,23 +64,29 @@ def make_agent(
     try:
         cls = AGENTS[name]
     except KeyError:
-        raise ValueError(f"unknown agent {name!r}; choose from {', '.join(AGENT_NAMES)}") from None
+        raise ValueError(
+            f"unknown agent {name!r}; choose from {', '.join(ALL_AGENT_NAMES)}"
+        ) from None
     return cls(transition, planner_config, agent_config)
 
 
 __all__ = [
     "AGENTS",
     "AGENT_NAMES",
+    "ALL_AGENT_NAMES",
+    "STRETCH_AGENT_NAMES",
     "Abort",
     "Agent",
     "AgentStats",
     "AgentUpdate",
     "ContingencyAgent",
+    "DStarLiteAgent",
     "Decision",
     "FixedAStarAgent",
     "Observation",
     "PathAgent",
     "PlanSnapshot",
     "ReplanAStarAgent",
+    "ValueIterationAgent",
     "make_agent",
 ]

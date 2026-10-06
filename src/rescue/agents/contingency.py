@@ -20,7 +20,11 @@ from rescue.config import AgentConfig, PlannerConfig
 from rescue.grid import Pos, fmt_pos
 from rescue.model import Action, ProblemModel, TransitionModel
 from rescue.plan import Plan
-from rescue.planners.andor import AndOrPlanner
+from rescue.planners.andor import AndOrPlanner, PlanResult
+from rescue.planners.value_iteration import ValueIterationPlanner
+
+#: Planners a contingency agent can use: both map ``plan(model, start)`` to a ``PlanResult``.
+Planner = AndOrPlanner | ValueIterationPlanner
 
 log = logging.getLogger(__name__)
 
@@ -37,7 +41,11 @@ class ContingencyAgent(Agent):
         agent_config: AgentConfig | None = None,
     ) -> None:
         super().__init__(transition, planner_config, agent_config)
-        self.planner = AndOrPlanner(self.planner_config)
+        self.planner = self._make_planner()
+
+    def _make_planner(self) -> Planner:
+        """The planner of this agent (subclasses swap in another ``plan(model, start)``)."""
+        return AndOrPlanner(self.planner_config)
 
     # --- plan state ------------------------------------------------------------------------
     def _reset_plan(self) -> None:
@@ -56,6 +64,9 @@ class ContingencyAgent(Agent):
         """The planning model the current plan was made on."""
         return self._model
 
+    def _plan_made(self, result: PlanResult) -> None:
+        """Hook called after every planning call, once the plan is in force (no-op here)."""
+
     def _replan(self) -> bool:
         """Plan from ``self.pos`` on a fresh belief snapshot; True if it was a replan."""
         model = ProblemModel.from_belief(self.belief, self.transition)
@@ -66,11 +77,13 @@ class ContingencyAgent(Agent):
         if plan is None:
             self._policy = {}
             self._envelope = frozenset()
-            log.info("andor: no strong-cyclic plan from %s (t=%d)", fmt_pos(self.pos), self.t)
+            log.info("%s: no strong-cyclic plan from %s (t=%d)", self.name, fmt_pos(self.pos),
+                     self.t)
         else:
             # One shallow copy and one tree walk per plan; per-step lookups use these caches.
             self._policy = plan.to_policy()
             self._envelope = plan.envelope()
+        self._plan_made(result)
         stats = result.stats
         return self._record_plan(
             plan=plan,

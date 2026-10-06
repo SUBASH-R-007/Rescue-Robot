@@ -227,8 +227,8 @@ class TrueGrid:
         return "\n".join(lines) + "\n"
 
     def save(self, path: str | Path) -> None:
-        """Write the map to ``path`` in the ASCII format (UTF-8)."""
-        Path(path).write_text(self.to_ascii(), encoding="utf-8")
+        """Write the map to ``path`` in the ASCII format (UTF-8, LF line endings on every OS)."""
+        Path(path).write_text(self.to_ascii(), encoding="utf-8", newline="\n")
 
     @classmethod
     def from_ascii(cls, text: str, name: str = "") -> TrueGrid:

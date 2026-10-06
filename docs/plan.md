@@ -78,6 +78,9 @@ docs/   plan.md algorithm.md architecture.md results.md figures/
 | D15 | Step budget default `4·R·C`. Depth limit default `R·C` (= no effective cut-off since path states are distinct). A strong-cyclic plan reaches the goal with probability 1 only in the limit, so **budget failures of `andor` are possible**, with probability ≈ `p^budget` per mission at worst (e.g. 1×2 corridor, p = 0.4, r = 1: budget 8, ≈ 6.6·10⁻⁴; seed 5582 fails). Negligible on the ≥ 5×5 maps of the tests and experiments; no minimum budget is added, and results must count such failures honestly. | Prompt §2.6, §3. |
 | D16 | Wasted moves = `steps − shortest true-map path length`, recorded only for successful missions (NaN otherwise). | Undefined on failure. |
 | D17 | Venv lives outside OneDrive (`%USERPROFILE%/.venvs/rescue-robot`); README documents a normal `pip install -e .[dev]`. | Avoid syncing ~200 MB of site-packages. |
+| D18 | Map generators draw from `default_rng(SeedSequence([seed, MAPGEN_STREAM_KEY]))`, a stream independent of the World's `SeedSequence(seed).spawn(3)`, so a map depends only on `(scenario, rows, cols, seed, params)` and `sim` / `compare` can use one seed for map and world without correlating them. Start and survivor are at least `min_separation = ceil(MAPGEN_MIN_SEPARATION_FRACTION·(R+C−2))` apart (Manhattan); the requirement is relaxed linearly to 1 only after `MAPGEN_RELAX_START_FRACTION` of `MAPGEN_MAX_ATTEMPTS` failed attempts (never reached in the test sweeps). | Seeded, reproducible maps whose missions are not trivially short. |
+| D19 | The stretch agents (`dstar_lite`, `vi_expected`) are **not** in `AGENT_NAMES` (the UI's `1/2/3` keys, the default comparison panes and brief §5's three compared agents); `ALL_AGENT_NAMES = AGENT_NAMES + STRETCH_AGENT_NAMES` are all buildable by `make_agent` and selectable with `compare --agents`. `vi_expected` reuses `andor`'s replan triggers and D10 anticipation (so 0 unplanned states is an invariant for it too); `dstar_lite` reuses `astar_replan`'s. Their `nodes_expanded` mean different things (VI: Bellman backups = sweeps × proper-region size; D\* Lite: vertices expanded by the incremental call) and are not comparable with AND-OR / A\* expansions. | Keeps the brief's three-way comparison intact while making the stretch agents first-class. |
+| D20 | Comparison panes: every pane's `World` gets the same seed, so the outcome uniform `u_t` is identical in every pane (D3); the outcome **kind** is identical only between panes whose robots act from cells with the same slip p (`TerrainSlip`, D4). On maps without `~` every pane draws the same kind at every `t`. The aftershock draws `(u, permutation)` are shared the same way, but the debris lands only on cells outside each robot's own sensor footprint and keeps the survivor reachable from that robot (D9), so with `q > 0` the panes' true maps stay identical only while their robots stand in the same places (a pane that finished stops receiving debris); the footer then says so (`CRN_AFTERSHOCK_TEXT`). One lock-step tick = one `Mission.step()` per still-running mission, so every running pane has `t == ticks`; a finished pane keeps its own final `t`, and an agent's final Abort takes a tick but no world step, so the footer's `tick n` can exceed every pane's `t`. | Precise meaning of "same outcome stream" and "lock-step" for brief §6.2. |
 
 ---
 
@@ -483,13 +486,196 @@ def export_plan_tree(plan, path, max_depth=5, title=None) -> Path   # matplotlib
     headless; frames; screenshot | None; record | None; autoplay
 class SimApp: __init__(options); run() -> int; handle_key(key, mods); tick(dt_ms); render()
 class ReplayApp: __init__(record: RunRecord, ...); same loop; ←/→ scrub, Home/End, Space
-class CompareApp: three Missions (AGENT_NAMES) on the same grid + seed, stepped in lock-step;
-    per-pane GridView + badge (RUNNING / RESCUED / ABORTED / BUDGET)
+class CompareApp: 2–5 Missions (default AGENT_NAMES) on the same grid + seed, stepped in
+    lock-step (D20); per-pane GridView + badge (RUNNING / RESCUED / ABORTED / BUDGET /
+    UNREACHABLE) — see §3.12
 ```
 
 Controls are exactly docs/brief.md §6.1 plus `C` (high-contrast palette) and `Esc` (quit).
-`M` cycles `maps/*.txt` and, once Phase 5 lands, the `mapgen.SCENARIOS` generators.
+In the simulator `M` cycles `maps/*.txt`, then the `mapgen.GENERATED_SCENARIOS` generators.
 Headless use: `python -m rescue.sim --headless --frames 100 --screenshot out.png`.
+*Clarification (P5):* brief §6.2's badge list omits UNREACHABLE; a pane whose agent proves the
+survivor unreachable on its belief shows it like the simulator does.
+
+### 3.12 Scenario library and stretch agents (Phase 5)
+
+**Scenario library (`mapgen.py`, brief §6.3, D18).**
+```python
+class MapGenerationError(RuntimeError)          # no solvable map in MAPGEN_MAX_ATTEMPTS attempts
+@dataclass(frozen=True)
+class ScenarioSpec: name: str; description: str; generator: Callable[..., TrueGrid]
+                    fixed_map: str | None = None   # repo-relative file of the deck_* scenarios
+SCENARIOS: dict[str, ScenarioSpec]   # random_rubble, collapsed_building, flooded_zone,
+                                     # maze_corridors, deck_demo, deck_figure (this order)
+GENERATED_SCENARIOS: tuple[str, ...] # the four with fixed_map None
+def generate(name, rows, cols, seed, **params) -> TrueGrid   # ValueError if unknown; grid.name = name
+def random_rubble(rows, cols, seed, density=DEFAULT_RUBBLE_DENSITY)          # RUBBLE_DENSITY_RANGE
+def collapsed_building(rows, cols, seed, room_size=BUILDING_ROOM_SIZE,
+                       collapse_fraction=BUILDING_COLLAPSE_FRACTION,
+                       rubble_density=BUILDING_RUBBLE_DENSITY)
+def flooded_zone(rows, cols, seed, water_fraction=FLOOD_WATER_FRACTION,
+                 debris_density=FLOOD_DEBRIS_DENSITY)                        # '~' = high slip
+def maze_corridors(rows, cols, seed, loop_fraction=MAZE_LOOP_FRACTION)
+def min_separation(rows, cols) -> int        # unrelaxed start–survivor distance (D18)
+def map_header(name, rows, cols, seed, params) -> str   # ';' lines: generator + exact command
+def build_parser(); def main(argv=None) -> int
+    # python -m rescue.mapgen NAME [--rows R --cols C --seed N --param KEY=VALUE ... --out PATH]
+    # prints the ASCII map; --out also writes it with the map_header
+```
+Every generated map has `rows, cols ≥ MAPGEN_MIN_SIZE` (else `ValueError`, as for a negative
+seed or a parameter out of range), start ≠ survivor, start OPEN, the survivor BFS-reachable on
+the true map (else the attempt is regenerated from the same stream), and no `~` on the start,
+the survivor or debris. `deck_*` load their file and ignore rows, cols and seed. Shapes:
+`collapsed_building` = a `BUILDING_STREET_WIDTH` street (dropped on maps too small for it)
+around rooms behind 1-cell walls with 1-cell doorways, interior **hallways** (brief §6.3
+"corridors"): along each axis with room for a `BUILDING_HALL_WIDTH` band beside ≥ 2 rooms of
+`BUILDING_MIN_ROOM_SIZE` (15×15 and larger; not 10×10), a hallway crosses the whole building
+with probability `BUILDING_HALL_PROB`, and at least one whenever one fits; every room beside it
+has a doorway onto it and both ends are entrances. Then `BUILDING_MERGE_FRACTION` fallen walls,
+`collapse_fraction` blocked doorways (entrances included) and rubble away from doors (hallways
+included); start in the street, survivor in a room (never a hallway); a cut-off survivor gets a
+collapsed doorway on the start's component boundary re-opened until connected, preferring one
+whose other side is the survivor's component (otherwise random). `flooded_zone` = the top
+`water_fraction` of Gaussian-smoothed noise (computed on a padded grid, then cropped) is `~`,
+sparse debris only on dry land; start and survivor are placed so that **water lies on every
+shortest route** between them (an all-dry route is strictly longer or absent; up to
+`FLOOD_CROSSING_START_TRIES` starts per attempt, dropped together with the separation after
+`MAPGEN_RELAX_START_FRACTION` of the attempts and on maps without water). Before this rule an
+all-dry route was as short as the shortest one on ~70 % of seeds, so the scenario mostly behaved
+like sparse rubble. The per-map top-`water_fraction` threshold leaves a small border excess of
+water (≈ 8 % relative at 15×15; a single global threshold would be flat but would let the water
+fraction vary per map). Missions use `TerrainSlip` through `make_transition`. `maze_corridors` = recursive-backtracker perfect maze
+on the even lattice (spare line on a random side for even sizes) with `loop_fraction` of inner
+walls knocked out. Float parameters must be real numbers (bools and strings raise
+`ValueError`, like non-int sizes). Sample maps (each regenerates byte-for-byte from its header
+command; `--out` and `TrueGrid.save` always write LF line endings): `maps/rubble_01.txt` (15×15,
+seed 0), `building_01.txt` (15×20, seed 0: a vertical hallway with both ends open),
+`flooded_01.txt` (15×15, seed 2: a water channel between start and survivor),
+`maze_01.txt` (15×15, seed 1).
+
+**Stretch planners.**
+```python
+# planners/value_iteration.py — expected-steps optimal policy on the frozen belief snapshot
+class TransitionTables(NamedTuple): states: list[Pos]; goal_index: int
+                                    succ: np.ndarray; prob: np.ndarray   # (len(ACTIONS), n, 4)
+def transition_tables(model: ProblemModel) -> TransitionTables   # true P(o|s,a), vectorised:
+    # slot k = outcome kind OUTCOME_ORDER[k] (kinds landing on one cell keep separate slots =
+    # the same backups as their merged outcome); zero-probability kinds → (goal, 0)
+def proper_region(tables) -> np.ndarray      # bool: strong-cyclic winning region (greatest fixpoint)
+class ValueIterationResult(NamedTuple): values: dict[Pos, float]; policy: dict[Pos, Action]
+                                        iterations: int        # inf outside the proper region
+def value_iteration(model) -> ValueIterationResult
+    # V = 0 start, Bellman sweeps V(s) = min_a 1 + Σ P·V until max Δ < VI_TOLERANCE
+    # (≤ VI_MAX_ITERS, warning otherwise); greedy = first action in ACTIONS order within
+    # VI_TIE_TOLERANCE of the minimum
+class ValueIterationPlanner:   # same interface as AndOrPlanner
+    __init__(config=PlannerConfig()); plan(model, start) -> PlanResult
+    last_values: dict[Pos, float]; last_iterations: int
+    # plan = plan_from_policy(policy); stats.nodes_expanded = Bellman backups; plan_size =
+    # policy states reachable from start; with config.validate a policy failing
+    # is_strong_cyclic is replaced by the reference policy (fallback_to_reference)
+# planners/dstar_lite.py — Koenig & Likhachev 2002, optimized version, backward search
+@dataclass(frozen=True) class DStarResult: path: list[Pos] | None; nodes_expanded: int
+class DStarLite:
+    __init__(passable, start, goal); g(p); rhs(p); is_passable(p); km; total_expanded
+    move_start(p); set_passable(changes) -> tuple[Pos, ...]; sync(passable) -> tuple[Pos, ...]
+    compute_shortest_path() -> int; extract_path() -> list[Pos] | None   # greedy argmin c + g
+    plan(passable, start) -> DStarResult                                 # all of the above
+```
+*Clarification (P5):* the optimized termination test can leave `s_start` overconsistent
+(`g = ∞`, `rhs` finite); `extract_path` therefore tests reachability with `rhs(s_start)` (exact
+at that point), never `g(s_start)`. Tests check every replan's path length against BFS.
+
+**Stretch agents (D19).**
+```python
+# agents/__init__.py
+AGENT_NAMES = ("andor", "astar_fixed", "astar_replan")   # unchanged
+STRETCH_AGENT_NAMES = ("dstar_lite", "vi_expected")
+ALL_AGENT_NAMES = AGENT_NAMES + STRETCH_AGENT_NAMES      # AGENTS / make_agent cover all five
+class DStarLiteAgent(ReplanAStarAgent)       # id "dstar_lite": one DStarLite per mission; every
+    dstar: DStarLite | None                  # replan syncs all belief changes since the last call
+class ValueIterationAgent(ContingencyAgent)  # id "vi_expected": planner = ValueIterationPlanner
+    vi_planner (alias of planner)            # on ProblemModel.from_belief, same triggers as andor
+    expected_steps: float                    # VI value at the planning position; inf without a
+                                             # plan, nan when the reference fallback is in force
+# ContingencyAgent hooks: _make_planner() -> planner; _plan_made(result) after every plan
+```
+
+**Head-to-head comparison (`compare.py`, `viz/compare_app.py`, brief §6.2, D20).**
+```python
+# python -m rescue.compare [--scenario NAME | --map PATH] [--rows R --cols C] [--seed N]
+#     [--agents a,b,...] [--p P] [--radius R] [--lazy] [--aftershock-q Q --aftershock-k K]
+#     [--high-contrast] [--headless --frames F --screenshot PNG] [--record GIF|MP4] [--mp4]
+#     [--autoplay] [--speed INDEX]          # headless prints one status line per pane
+def parse_agents(text | Sequence[str] | None) -> tuple[str, ...]   # 2–5 distinct ALL_AGENT_NAMES
+@dataclass(frozen=True) class CompareOptions: map_path; scenario; rows; cols; seed; agents;
+    slip_p; sensor_radius; replan_mode; aftershock_q; aftershock_k; high_contrast; headless;
+    frames; screenshot; record; autoplay; mp4; speed_index; recordings_dir
+@dataclass class ComparePane: agent; mission; view; trace; last_event; status; t (properties)
+class CompareApp(BaseApp): panes; missions; ticks; all_done; reset_missions(); step_once();
+    toggle_play(); new_seed(); next_scenario(); change_slip(delta); handle_key(key, mods);
+    render() -> Surface; run() -> int
+def scenario_entries(map_path) -> list[ScenarioEntry]   # M cycle: --map file first, then SCENARIOS
+def outcome_rows(app) -> list[tuple[int, tuple[str | None, ...]]]   # per t, kind per pane (CRN)
+def pane_event_line(event) -> tuple[str, str] | None   # the pane's line: most important of
+    # event_messages (failure/success > warn > replan > slip/skid > info); an Abort's note is
+    # folded into the failure line
+# layout: 1..COMPARE_MAX_PANE_ROWS rows of panes, whichever gives the largest cells (ties: fewer
+# rows; two rows only pay off for wide maps); one agent-name font shared by all panes
+def agent_colour(palette, agent) -> RGB   # palette.agent, else COMPARE_AGENT_COLOURS
+```
+Keys: `Space`, `N` (one tick), `R`, `S` (seed + 1; regenerates a generated scenario, a map file
+stays), `+/−`, `[ ]`, `M`, `T`, `P`, `C`, `G`, `H`, `Esc`. The figure
+`docs/figures/compare_collapsed_building.png` comes from
+`python -m rescue.compare --headless --frames 250 --screenshot docs/figures/compare_collapsed_building.png`.
+
+**Constants (`config.py`, Phase 5).** Value iteration: `VI_TOLERANCE = 1e-10`,
+`VI_MAX_ITERS = 100_000`, `VI_TIE_TOLERANCE = 1e-7`. Map generation: `MAPGEN_STREAM_KEY`,
+`MAPGEN_MIN_SIZE = 5`, `MAPGEN_MIN_SEPARATION_FRACTION = 0.5`,
+`MAPGEN_RELAX_START_FRACTION = 0.5`, `MAPGEN_DEFAULT_SIZE = (15, 15)`, `MAPGEN_DEFAULT_SEED = 0`
+(CLI); `BUILDING_ROOM_SIZE = 4`, `BUILDING_MIN_ROOM_SIZE = 2`, `BUILDING_ROOM_JITTER = 1`,
+`BUILDING_COLLAPSE_FRACTION = 0.3`, `BUILDING_RUBBLE_DENSITY = 0.08`,
+`BUILDING_MERGE_FRACTION = 0.1`, `BUILDING_STREET_WIDTH = 1`, `BUILDING_ENTRANCE_PROB = 0.15`,
+`BUILDING_MIN_ENTRANCES = 2`; `FLOOD_WATER_FRACTION = 0.25`, `FLOOD_DEBRIS_DENSITY = 0.06`,
+`FLOOD_BLOB_SCALE = 0.12`, `FLOOD_MIN_SIGMA = 1.2`, `FLOOD_PAD_SIGMAS = 2.0`,
+`FLOOD_WATER_RANGE = (0.0, 0.6)`, `FLOOD_DEBRIS_RANGE = (0.0, 0.3)`;
+`MAZE_LOOP_FRACTION = 0.08`. Comparison: `COMPARE_DEFAULT_SCENARIO = "collapsed_building"`,
+`COMPARE_DEFAULT_SEED = 7`, `COMPARE_DEFAULT_SIZE = (15, 15)`, `COMPARE_MIN_AGENTS = 2`,
+`COMPARE_MAX_AGENTS = 5`, `COMPARE_DEFAULT_SPEED_INDEX = 4` (8 ticks/s, so a short headless
+run gets somewhere), and the layout / colour constants `COMPARE_PANE_GAP`,
+`COMPARE_PANE_PADDING`, `COMPARE_METRIC_COLUMNS`, `COMPARE_EVENT_LINES`,
+`COMPARE_AGENT_COLOURS` (stretch-agent colours per palette), `COMPARE_MAX_PANE_ROWS = 2`.
+Fix pass: `BUILDING_HALL_WIDTH = 1`, `BUILDING_HALL_PROB = 0.5`,
+`FLOOD_CROSSING_START_TRIES = 12`. *Exception:* the layout / colour constants are
+UI constants that §3.11 would put in `viz/theme.py`; they live in `config.py` with the other
+comparison settings.
+
+**Honest notes from the Phase 5 checks** (scratch sanity checks, superseded by the Phase 6
+harness). On a frozen snapshot VI's exact expected steps are never worse than the AND-OR
+plan's (property-tested), but in closed-loop missions `vi_expected` is not guaranteed to need
+fewer steps than `andor`: each policy is optimal only for the optimistic belief it was planned
+on, and the runs diverge after the first different action, so mission comparisons are not
+paired (one 300-mission check had `vi_expected` slightly *more* steps on average). D\* Lite
+expands fewer nodes than A\* from scratch but, in pure Python, spends more total planning time
+than `astar_replan` because of its per-call overhead. `vi_expected` is the slowest planner: after
+vectorising `transition_tables` (39 → 1.6 ms on a 30×30 open belief at p = 0.4; a plan 77 →
+29 ms), each plan is still a full VI on the whole belief (tens of ms at 30×30, many replans
+per mission), so the Phase 6 harness must budget for it.
+
+`andor` vs `astar_replan` under CRN: both follow a shortest route on the optimistic belief with
+compatible tie-breaking, so they take *identical* trajectories until the contingency plan's
+action first differs from A\*'s next move, and until then differ only in Replans, Unplanned and
+Plan ms. Scratch check at 15×15, p = 0.2, seeds 0–39: identical whole trajectories on 5/40
+`random_rubble`, 13/40 `collapsed_building`, 4/40 `flooded_zone` and 16/40 `maze_corridors`
+maps (mean steps andor / astar_replan: 29.5 / 30.6, 53.2 / 57.8, 22.7 / 23.3, 65.9 / 61.2).
+A "fewer wasted moves than A\* + replan" hypothesis can therefore come out as a tie or ❌ on
+some scenarios; report it as measured, without tuning seeds or the default comparison
+(`collapsed_building` 15×15 seed 7: 76 vs 81 steps).
+
+Scenario context for cross-scenario numbers: `collapsed_building` always starts on the
+perimeter street (≈ 40 % of a shortest route is street at 15×15), the others on any free cell;
+mean BFS shortest paths at 15×15 over seeds 0–39: rubble 17.8, flooded 16.1, building 24.0,
+maze 28.9.
 
 ---
 
@@ -554,7 +740,12 @@ caching bug: a state solved with a Loop to an ancestor that later fails.
   r = 0 shows bumps/unplanned are real), `test_demo`.
 * **P4** headless viz smoke test (100 frames, screenshot), replay round trip, recorder.
 * **P5** `test_mapgen` (5 scenarios × 100 seeds solvable), aftershock invariants, compare app
-  smoke test.
+  smoke test. *As built:* `test_mapgen` (4 generated scenarios × 100 seeds at 12×12, 10×17 and
+  5×5 plus `deck_*`; determinism, structure, CLI, sample maps regenerate), `test_stress`
+  (aftershocks never disconnect the survivor, terrain-slip frequencies, r = 1 vs 2, p sweep),
+  `test_stretch_agents` (VI closed forms, Bellman optimality, VI ≤ AND-OR expected cost; D\* Lite
+  = BFS over incremental replans; stretch missions), `test_compare` (lock-step, CRN, keys,
+  headless CLI).
 * **P6** `test_experiments` (quick config end to end on a tiny matrix, CSV schema, Wilson CI,
   hypotheses table rendering).
 * **P7** coverage ≥ 85 % on `src/rescue` excluding `viz/`.
