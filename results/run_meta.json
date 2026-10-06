@@ -1,0 +1,33 @@
+{
+  "config_name": "main",
+  "config_path": "experiments/main.yaml",
+  "base_seed": 2026,
+  "n_maps": 200,
+  "agents": [
+    "andor",
+    "astar_fixed",
+    "astar_replan",
+    "dstar_lite",
+    "vi_expected"
+  ],
+  "blocks": [
+    "slip_sweep",
+    "aftershocks",
+    "sensor_range",
+    "replan_mode",
+    "scaling",
+    "tiebreak_ablation"
+  ],
+  "n_tasks": 27450,
+  "n_tasks_total": 27450,
+  "max_tasks": null,
+  "n_runs": 99400,
+  "workers": 18,
+  "wall_time_s": 873.942,
+  "started_at": "2026-10-06T11:28:13+05:30",
+  "finished_at": "2026-10-06T11:42:47+05:30",
+  "date": "2026-10-06",
+  "git_commit": "a6d6484",
+  "python": "3.11.9",
+  "platform": "Windows-10-10.0.26200-SP0"
+}
