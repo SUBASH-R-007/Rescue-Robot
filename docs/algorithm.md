@@ -964,17 +964,79 @@ not cap it.
 
 ### 7.3 Measured planning time
 
-> **PLACEHOLDER: to be filled in Phase 6** by the experiment harness from `results/` (do not
-> edit by hand). Every number must come from a committed CSV. Proposition 6.2 predicts that
-> the rollback and fallback columns will be 0. If they are not, that must be reported.
+Source: the `scaling` block of the full run (`experiments/main.yaml`; `results/raw.csv`,
+`experiment == scaling`): `random_rubble`, p = 0.2, r = 1, eager replanning, 50 seeded maps
+per size, every agent on the same map and outcome stream. All 1,000 missions succeeded. The
+timings are wall-clock times measured with 18 worker processes running at once on one
+Windows 11 machine (`results/run_meta.json`), so they are comparable *between* agents of the
+same run but are not benchmarks. Every value is a mean over the 50 missions ± the half-width
+of a Student-t 95 % CI. Definitions:
 
-| Grid | Missions | Planning calls per mission (mean) | Time per call, mean ± 95% CI (ms) | Nodes expanded per call (mean) | Plan size, `Act` nodes (mean) | Rollbacks (total) | Fallbacks (total) |
-|---|---|---|---|---|---|---|---|
-| 10×10 | — | — | — | — | — | — | — |
-| 15×15 | — | — | — | — | — | — | — |
-| 20×20 | — | — | — | — | — | — | — |
-| 25×25 | — | — | — | — | — | — | — |
-| 30×30 | — | — | — | — | — | — | — |
+* **calls per mission** = `plans_made` (the initial plan plus every replan);
+* **time per call** = the per-mission mean `planning_ms / plans_made`, averaged over missions;
+  **time per mission** = total `planning_ms` (equal to `planning_ms_mean` in
+  `results/summary.csv`);
+* **nodes per call** = `nodes_expanded / plans_made`. These units differ between planners
+  (D19): AND-OR expansions, A\* pops, D\* Lite vertex expansions, VI Bellman backups;
+* **plan size** = `plan_size` of the **last** plan of the mission (the harness records only the
+  most recent plan): states with an action for AND-OR and VI, remaining path length for A\*
+  and D\* Lite. It is not a per-call average.
+
+<!-- One-liner that prints every row below (agent, size, n, then (mean, CI half-width) for calls, ms/call, ms/mission, nodes/call, plan size, then Σ fallbacks), run from the repository root:
+python -c "import csv,statistics as s;from scipy.stats import t;R=[r for r in csv.DictReader(open('results/raw.csv')) if r['experiment']=='scaling'];ci=lambda x:(round(s.mean(x),3),round(t.ppf(.975,len(x)-1)*s.stdev(x)/len(x)**.5,3));[print(a,n,len(X),ci([int(r['plans_made']) for r in X]),ci([float(r['planning_ms'])/int(r['plans_made']) for r in X]),ci([float(r['planning_ms']) for r in X]),ci([int(r['nodes_expanded'])/int(r['plans_made']) for r in X]),ci([int(r['plan_size']) for r in X]),sum(int(r['planner_fallbacks']) for r in X)) for a in ('andor','astar_replan','dstar_lite','vi_expected') for n in ('10','15','20','25','30') for X in [[r for r in R if r['agent']==a and r['rows']==n]]]"
+-->
+
+**AND-OR (`andor`).**
+
+| Grid | Missions | Planning calls per mission | Time per call (ms) | Time per mission (ms) | Nodes expanded per call | Last plan size (states with an action) | Rollbacks (total) | Fallbacks (total) |
+|---|---|---|---|---|---|---|---|---|
+| 10×10 | 50 | 6.90 ± 0.70 | 3.76 ± 0.43 | 24.9 ± 3.3 | 63.9 ± 4.5 | 39.4 ± 8.9 | not recorded | 0 |
+| 15×15 | 50 | 10.06 ± 1.27 | 10.8 ± 1.7 | 104.7 ± 20.8 | 139.6 ± 11.5 | 89.7 ± 22.3 | not recorded | 0 |
+| 20×20 | 50 | 13.36 ± 1.24 | 25.3 ± 4.3 | 323.7 ± 56.7 | 250.2 ± 20.4 | 168.9 ± 40.4 | not recorded | 0 |
+| 25×25 | 50 | 18.86 ± 1.79 | 41.5 ± 9.9 | 817.8 ± 226.5 | 347.3 ± 31.3 | 172.9 ± 49.3 | not recorded | 0 |
+| 30×30 | 50 | 20.24 ± 1.52 | 81.9 ± 22.7 | 1564.1 ± 426.1 | 505.0 ± 44.6 | 311.4 ± 78.7 | not recorded | 0 |
+
+**The other agents (same missions).** Time per call (ms) / time per mission (ms) / nodes per call; calls per mission in brackets.
+
+| Grid | `astar_replan` | `dstar_lite` | `vi_expected` |
+|---|---|---|---|
+| 10×10 | 0.093 ± 0.006 / 1.04 ± 0.14 / 6.96 [11.28 calls] | 0.216 ± 0.021 / 2.24 ± 0.22 / 5.46 [11.34] | 8.00 ± 0.34 / 57.6 ± 6.7 / 4,760 [7.22] |
+| 15×15 | 0.114 ± 0.006 / 2.04 ± 0.34 / 10.20 [17.54] | 0.243 ± 0.015 / 4.09 ± 0.36 / 6.80 [17.66] | 15.0 ± 0.6 / 149.8 ± 18.9 / 14,093 [9.94] |
+| 20×20 | 0.148 ± 0.008 / 3.54 ± 0.51 / 12.86 [23.32] | 0.315 ± 0.017 / 7.16 ± 0.66 / 8.49 [23.44] | 26.3 ± 0.8 / 388.3 ± 42.7 / 30,190 [14.68] |
+| 25×25 | 0.203 ± 0.013 / 6.49 ± 0.87 / 16.29 [31.48] | 0.419 ± 0.023 / 12.82 ± 1.11 / 10.57 [31.90] | 46.3 ± 2.0 / 869.6 ± 88.0 / 55,363 [18.72] |
+| 30×30 | 0.230 ± 0.016 / 8.26 ± 0.72 / 18.76 [36.28] | 0.494 ± 0.026 / 17.47 ± 1.09 / 11.23 [36.26] | 66.9 ± 2.3 / 1446.7 ± 112.3 / 91,106 [21.80] |
+
+<!-- Paired ratio andor / astar_replan per map (geometric mean; per mission, then per call):
+python -c "import csv,math,statistics as s;R=[r for r in csv.DictReader(open('results/raw.csv')) if r['experiment']=='scaling'];d={};[d.setdefault((r['rows'],r['seed']),{}).__setitem__(r['agent'],r) for r in R];g=lambda f,n:round(math.exp(s.mean(math.log(f(v['andor'])/f(v['astar_replan'])) for k,v in d.items() if k[0]==n)),1);[print(n,g(lambda r:float(r['planning_ms']),n),g(lambda r:float(r['planning_ms'])/int(r['plans_made']),n)) for n in ('10','15','20','25','30')]"
+Growth exponent of andor time per call: python -c "import math;print(math.log(81.87/3.762)/math.log(9))"  (1.40)
+-->
+
+What the table shows:
+
+* **Fallbacks are 0**, as Proposition 6.2 predicts, here and over all 27,450 `andor` missions of
+  the full run (`docs/results.md` §4). **Rollbacks are not measured by the harness**:
+  `PlannerStats.rollbacks` exists but is not exported to `raw.csv`. The no-rollback half of
+  Proposition 6.2 is therefore checked only by the property tests (§6.4), not by this run.
+* **Nodes expanded per call** grow about in proportion to the grid area: 63.9 at 10×10 and
+  505.0 at 30×30, a factor of 7.9 for 9 times as many cells. The harness does not record `n`
+  (the number of states on the planning map), so the run cannot be checked against the
+  `n − 1` bound of §7.1 directly. Since `n ≤ R·C`, the mean is at least below the looser bound
+  `R·C − 1` (899 at 30×30).
+* **Time per call** grows faster than the expansions: from 3.76 ms to 81.9 ms, a factor of
+  about 22 for 9 times as many cells, or roughly `cells^1.4`. That lies between linear and the
+  `O(n²)` worst case of §7.1. The likely extra cost is the `HAS_PROGRESS` searches and the BFS
+  distance map, but this run does not measure them separately. The 95 % CIs at 25×25 and
+  30×30 are wide (±24 % and ±28 % of the mean) because a few missions have expensive plans.
+* **Compared with A\* + replan**, one AND-OR call costs 39× (10×10) to 268× (30×30) as much
+  (geometric mean of the per-map ratios). Per mission the factor is 25× to 149×, smaller
+  because AND-OR replans less often. `vi_expected` costs about as much as AND-OR. It is slower
+  per call at 10×10 and 15×15 (8.00 vs 3.76 ms and 15.0 vs 10.8 ms), and from 20×20 on the
+  two unpaired CIs overlap. Paired by map, VI's time per mission is still higher at every size:
+  the geometric mean of the per-map ratio VI / AND-OR is 2.33 at 10×10, 1.57, 1.31 and 1.36 at
+  15×15 to 25×25, and 1.18 [0.95, 1.47] at 30×30, where the CI includes 1 (one-liner in
+  `docs/results.md` §3.9). D\* Lite's node count per call (11.2 vertex expansions at 30×30) and
+  A\*'s (18.8 pops) are in different units (D19) and cannot be compared. Time per call can: in
+  this pure-Python implementation D\* Lite takes about twice as long per call.
 
 ---
 
