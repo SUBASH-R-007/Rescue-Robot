@@ -12,8 +12,6 @@ from numbers import Integral
 from pathlib import Path
 from typing import Any, Literal
 
-import yaml
-
 # --- Transition model -------------------------------------------------------------------
 #: Fraction of the slip mass ``p`` that keeps the robot in place ("slipped").
 SLIP_STAY_FRACTION: float = 0.75
@@ -155,7 +153,13 @@ class AgentConfig:
 
 
 def load_yaml(path: str | Path) -> dict[str, Any]:
-    """Load a YAML file into a dict (an empty file gives ``{}``)."""
+    """Load a YAML file into a dict (an empty file gives ``{}``).
+
+    PyYAML is imported here, not at module import, so the simulator (which never reads YAML)
+    also runs where PyYAML is not installed, e.g. the pygbag browser build (docs/web.md).
+    """
+    import yaml
+
     with Path(path).open(encoding="utf-8") as fh:
         data = yaml.safe_load(fh)
     if data is None:

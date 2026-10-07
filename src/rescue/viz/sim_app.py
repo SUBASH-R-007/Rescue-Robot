@@ -10,15 +10,20 @@ plan tree, event log) and the help overlay. It contains no mission logic: every 
 :class:`BaseApp` holds what the simulator shares with the replay app (window, fonts, views,
 palette switching, speed, play/pause, help, recording and the frame loop). Both apps run
 headless (``SDL_VIDEODRIVER=dummy``) for tests and recordings: ``render()``, ``tick(dt_ms)`` and
-``handle_key(key, mods)`` can be driven without an event loop.
+``handle_key(key, mods)`` can be driven without an event loop. The frame loop exists twice over
+one per-frame method, :meth:`BaseApp.run_frame`: the blocking :meth:`BaseApp.run` (desktop) and
+:meth:`BaseApp.run_async`, which yields to the asyncio event loop once per frame (the pygbag
+browser build, docs/web.md).
 """
 
 from __future__ import annotations
 
+import asyncio
+import itertools
 import logging
 import math
 import os
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -51,7 +56,7 @@ from rescue.viz.panel import (
     PanelInfo,
     draw_help_overlay,
 )
-from rescue.viz.record import Recorder
+from rescue.viz.record import Recorder, in_browser, recording_available
 from rescue.viz.tree_view import TreeView
 
 if TYPE_CHECKING:
@@ -75,6 +80,12 @@ EDITED_GRID_NAME = "edited"
 #: Recording suffixes.
 GIF_SUFFIX = ".gif"
 MP4_SUFFIX = ".mp4"
+#: Event-log line for ``G`` where nothing can be recorded (the browser build).
+RECORDING_UNAVAILABLE_TEXT = "recording unavailable in the browser"
+#: Help-overlay keys hidden in the browser build (recording, quit).
+BROWSER_HIDDEN_KEYS: frozenset[str] = frozenset({"G", "Esc"})
+#: Footer hint in the browser build (no "Esc quit").
+BROWSER_HINT = "H help · Space play/pause · N step"
 #: Panel titles and editor hint.
 SIM_TITLE = "Rescue simulator"
 EDITOR_TITLE = "Map editor"
@@ -248,6 +259,14 @@ def help_lines(mission_keys: bool = True) -> list[tuple[str, str] | str]:
         ("H", "this help"),
         ("Esc", "quit"),
     ]
+    if in_browser():
+        # The browser build cannot record (no imageio) and must not quit (the canvas would
+        # freeze until a page reload), so those keys are not offered there (docs/web.md).
+        view = [
+            item
+            for item in view
+            if not (isinstance(item, tuple) and item[0] in BROWSER_HIDDEN_KEYS)
+        ]
     if not mission_keys:
         return [
             "Replay",
@@ -433,27 +452,57 @@ class BaseApp:
         if self.recorder.active and self.recorder.due(self.clock_ms):
             self.recorder.add_frame(self.screen)
 
+    def run_frame(self, clock: pygame.time.Clock) -> bool:
+        """One iteration of the frame loop; False when the app should stop.
+
+        Headless: one :meth:`frame` of :data:`theme.HEADLESS_FRAME_MS`. Interactive: wait for
+        the next frame at :data:`theme.TARGET_FPS`, dispatch the pending events, then (unless
+        they quit the app) :meth:`frame` and flip the display.
+        """
+        if self.headless:
+            self.frame(theme.HEADLESS_FRAME_MS)
+            return self.running
+        dt = clock.tick(theme.TARGET_FPS)
+        for event in pygame.event.get():
+            self.handle_event(event)
+        if not self.running:
+            return False
+        self.frame(dt)
+        pygame.display.flip()
+        return True
+
+    def _frame_slots(self) -> Iterable[int]:
+        """``frames`` slots headless, else unbounded (the loop ends on Esc / window close)."""
+        return range(self.frames) if self.headless else itertools.count()
+
+    def _finish_run(self) -> int:
+        """Save the headless screenshot, if one was asked for; the exit code."""
+        if self.headless and self.screenshot is not None:
+            self.save_screenshot(self.screenshot)
+        return 0
+
     def run(self) -> int:
         """Run the app until Esc / window close (or ``frames`` frames headless); exit code."""
         try:
-            if self.headless:
-                for _ in range(self.frames):
-                    self.frame(theme.HEADLESS_FRAME_MS)
-                    if not self.running:
-                        break
-                if self.screenshot is not None:
-                    self.save_screenshot(self.screenshot)
-                return 0
             clock = pygame.time.Clock()
-            while self.running:
-                dt = clock.tick(theme.TARGET_FPS)
-                for event in pygame.event.get():
-                    self.handle_event(event)
-                if not self.running:
+            for _ in self._frame_slots():
+                if not self.running or not self.run_frame(clock):
                     break
-                self.frame(dt)
-                pygame.display.flip()
-            return 0
+            return self._finish_run()
+        finally:
+            self.close()
+
+    async def run_async(self) -> int:
+        """:meth:`run` for an asyncio event loop: the same frames, but after each one control
+        returns to the loop (``await asyncio.sleep(0)``), as the pygbag browser build requires
+        (the browser only repaints and delivers input while Python yields)."""
+        try:
+            clock = pygame.time.Clock()
+            for _ in self._frame_slots():
+                if not self.running or not self.run_frame(clock):
+                    break
+                await asyncio.sleep(0)
+            return self._finish_run()
         finally:
             self.close()
 
@@ -493,7 +542,9 @@ class BaseApp:
             self.show_help = False
             return True
         if key == pygame.K_ESCAPE:
-            self.running = False
+            # In the browser, quitting would freeze the canvas until a page reload.
+            if not in_browser():
+                self.running = False
         elif key == pygame.K_h:
             self.show_help = not self.show_help
         elif key == pygame.K_t:
@@ -533,6 +584,10 @@ class BaseApp:
         return None
 
     def _start_recording(self, path: Path) -> None:
+        if not recording_available():
+            self.log.add(RECORDING_UNAVAILABLE_TEXT, "warn")
+            log.warning("%s; not recording %s", RECORDING_UNAVAILABLE_TEXT, path)
+            return
         actual = self.recorder.start(path)
         self.log.add(f"Recording to {actual}", "info")
 
@@ -1041,12 +1096,13 @@ class SimApp(BaseApp):
             speed=self.speed,
             paused=self.paused or self.mission.done or self.editor,
             recording=self.recorder.active,
-            hint=EDITOR_HINT if self.editor else DEFAULT_HINT,
+            hint=EDITOR_HINT if self.editor else (BROWSER_HINT if in_browser() else DEFAULT_HINT),
             editing=self.editor,
         )
 
 
 __all__ = [
+    "RECORDING_UNAVAILABLE_TEXT",
     "BaseApp",
     "ScenarioEntry",
     "SimApp",

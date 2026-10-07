@@ -11,11 +11,14 @@ Frames are copied with ``pygame.surfarray.array3d`` (after an optional ``smooths
 ``scale``), so the recorder works with the dummy SDL video driver. The writer opens lazily on
 the first frame; ``.mp4`` falls back to ``.gif`` (with a logged warning) when imageio-ffmpeg is
 not installed. :meth:`Recorder.due` helps apps running at 60 FPS capture at the record rate.
+imageio is imported only when the first frame is written, so this module also imports in the
+pygbag browser build, where :func:`recording_available` is False (docs/web.md).
 """
 
 from __future__ import annotations
 
 import logging
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -36,6 +39,18 @@ VIDEO_BLOCK = 2
 #: GIF loop count (0 = forever).
 GIF_LOOP = 0
 MS_PER_S = 1000.0
+#: ``sys.platform`` of the pygbag (WebAssembly / Emscripten) browser build.
+BROWSER_PLATFORM = "emscripten"
+
+
+def in_browser() -> bool:
+    """True when running in the browser build (pygbag, ``sys.platform == "emscripten"``)."""
+    return sys.platform == BROWSER_PLATFORM
+
+
+def recording_available() -> bool:
+    """False in the browser build: imageio is not shipped there and files cannot be saved."""
+    return not in_browser()
 
 
 def ffmpeg_available() -> bool:

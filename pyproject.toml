@@ -31,6 +31,8 @@ dev = [
   "ruff>=0.5",
 ]
 video = ["imageio-ffmpeg>=0.4"]
+# Browser build of the simulator (python scripts/build_web.py, docs/web.md).
+web = ["pygbag>=0.9"]
 
 [project.scripts]
 rescue-demo = "rescue.demo:main"

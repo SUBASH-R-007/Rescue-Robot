@@ -7,14 +7,18 @@ trace mark also has its own glyph or shape (see ``grid_view.py``).
 
 Fonts come from :func:`load_fonts`, which picks the first installed font from
 :data:`FONT_FALLBACKS` that actually contains the arrow glyphs used by plan labels
-(``→ ↺ … ×``), falling back to ``SysFont`` and finally pygame's built-in font.
+(``→ ↺ … ×``), falling back to ``SysFont`` and finally pygame's built-in font. Bundled font
+files (:func:`bundled_fonts_dir`, shipped by the browser build, docs/web.md) take precedence;
+a normal checkout has none, so the desktop choice is unchanged.
 """
 
 from __future__ import annotations
 
 import logging
 import math
+import os
 from dataclasses import dataclass, field
+from pathlib import Path
 
 import pygame
 
@@ -124,6 +128,14 @@ SYMBOL_FONT_NAMES: tuple[str, ...] = (
 REQUIRED_GLYPHS: str = "→↺…×"
 #: Glyphs the monospace font must contain (trace lines in the log).
 MONO_REQUIRED_GLYPHS: str = "→…"
+#: Environment variable naming a directory of bundled font files (overrides the default).
+FONTS_DIR_ENV: str = "RESCUE_FONTS_DIR"
+#: Directory of bundled fonts next to the ``rescue`` package (``<dir>/rescue``, ``<dir>/fonts``);
+#: ``scripts/build_web.py`` creates it in the browser build, a checkout has none.
+BUNDLED_FONTS_DIRNAME: str = "fonts"
+#: Bundled font files (DejaVu, Bitstream Vera licence): the UI font and the monospace font.
+BUNDLED_FONT_FILE: str = "DejaVuSans.ttf"
+BUNDLED_MONO_FONT_FILE: str = "DejaVuSansMono.ttf"
 #: A code point no font defines: its metrics are those of the "missing glyph" box.
 _NOTDEF_PROBE: str = "￿"
 FONT_SIZE_SMALL: int = 13
@@ -544,17 +556,51 @@ def resolve_font_path(names: tuple[str, ...], glyphs: str) -> str | None:
     return first
 
 
+def bundled_fonts_dir() -> Path | None:
+    """Directory of bundled font files, or None (a normal checkout or install).
+
+    Candidates, in order: ``$RESCUE_FONTS_DIR`` (:data:`FONTS_DIR_ENV`), then
+    :data:`BUNDLED_FONTS_DIRNAME` next to the ``rescue`` package. The first one holding
+    :data:`BUNDLED_FONT_FILE` wins.
+    """
+    candidates: list[Path] = []
+    env = os.environ.get(FONTS_DIR_ENV)
+    if env:
+        candidates.append(Path(env))
+    candidates.append(Path(__file__).resolve().parents[2] / BUNDLED_FONTS_DIRNAME)
+    for directory in candidates:
+        if (directory / BUNDLED_FONT_FILE).is_file():
+            return directory
+    return None
+
+
+def bundled_font_path(filename: str, glyphs: str) -> str | None:
+    """Path of the bundled font ``filename`` if it exists and covers ``glyphs``, else None."""
+    directory = bundled_fonts_dir()
+    if directory is None:
+        return None
+    path = directory / filename
+    if path.is_file() and _covers(str(path), glyphs):
+        return str(path)
+    return None
+
+
 def load_fonts() -> Fonts:
     """Load the UI fonts (initialises ``pygame.font`` if needed).
 
-    Families are tried in :data:`FONT_FALLBACKS` order, keeping the first that has the arrow
-    glyphs; if none is installed, ``pygame.font.SysFont`` with the comma-separated list and
-    finally ``pygame.font.Font(None, size)`` are used.
+    Bundled font files (:func:`bundled_font_path`) come first. Otherwise families are tried in
+    :data:`FONT_FALLBACKS` order, keeping the first that has the arrow glyphs; if none is
+    installed, ``pygame.font.SysFont`` with the comma-separated list and finally
+    ``pygame.font.Font(None, size)`` are used.
     """
     if not pygame.font.get_init():
         pygame.font.init()
-    path = resolve_font_path(FONT_FALLBACKS, REQUIRED_GLYPHS)
-    mono_path = resolve_font_path(MONO_FONT_FALLBACKS, MONO_REQUIRED_GLYPHS)
+    path = bundled_font_path(BUNDLED_FONT_FILE, REQUIRED_GLYPHS) or resolve_font_path(
+        FONT_FALLBACKS, REQUIRED_GLYPHS
+    )
+    mono_path = bundled_font_path(BUNDLED_MONO_FONT_FILE, MONO_REQUIRED_GLYPHS) or (
+        resolve_font_path(MONO_FONT_FALLBACKS, MONO_REQUIRED_GLYPHS)
+    )
     if mono_path is None or not _covers(mono_path, MONO_REQUIRED_GLYPHS):
         mono_path = path
 
