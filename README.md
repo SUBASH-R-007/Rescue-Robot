@@ -65,7 +65,7 @@ assumption and step budget (`4·R·C`).
 | `astar_replan` | A\* + replan | Replans whenever the outcome deviates from the path or the map is contradicted. |
 | `dstar_lite` (stretch) | D\* Lite | Incremental replanning (Koenig & Likhachev 2002), same triggers as `astar_replan`. |
 | `vi_expected` (stretch) | Expected-steps optimal | Value iteration with the true outcome probabilities, same triggers as `andor`. |
-| `lao_expected` (stretch) | Expected-steps optimal, by heuristic search | LAO\* from the robot's cell: the same optimum as `vi_expected`, same triggers as `andor` (plan §3.15.1). |
+| `lao_expected` (stretch) | Expected-steps optimal, by heuristic search | LAO\* from the robot's cell: the same optimum as `vi_expected`, same triggers as `andor` (plan §3.15.1). In its own run it played the same missions as `vi_expected` but planned 1.6–2.4× slower ([`results/lao/LAO.md`](results/lao/LAO.md)). |
 
 **The simulation suite.**
 
@@ -265,6 +265,8 @@ every sample map in [`maps/`](maps/) regenerates byte for byte. Scenarios: `rand
 ```bash
 python -m rescue.experiments --quick                            # small smoke run, writes results/quick/
 python -m rescue.experiments --config experiments/main.yaml     # full run, writes results/
+python -m rescue.experiments --config experiments/lao.yaml --out results/lao   # LAO* run
+python -m rescue.experiments.lao_report results/lao              # → results/lao/LAO.md
 ```
 
 - [`experiments/quick.yaml`](experiments/quick.yaml) has the same blocks as the full run with
@@ -287,6 +289,7 @@ python scripts/make_figures.py                  # simulator figures into docs/fi
 python scripts/make_figures.py --only gif tree  # gif, replan, figure, tree
 python scripts/make_figures.py --out some/dir
 python -m rescue.compare --headless --frames 250 --screenshot docs/figures/compare_collapsed_building.png
+python scripts/make_ext_figures.py              # extension-simulator figures (docs/figures/ext_*.png)
 ```
 
 `make_figures.py` renders the simulator figures (the GIF, the two simulator screenshots and the
@@ -385,6 +388,15 @@ The full write-up, with every plot, the statistical methods and the threats to v
 [`results/summary.csv`](results/summary.csv), [`results/run_meta.json`](results/run_meta.json),
 [`results/plots/`](results/plots/).
 
+**LAO\* (separate run).** The LAO\* stretch agent `lao_expected` was added after the main run
+and measured in its own run ([`experiments/lao.yaml`](experiments/lao.yaml), 1,500 missions,
+[`results/lao/LAO.md`](results/lao/LAO.md)). It played exactly the same missions as value
+iteration (500/500), but it planned 1.6–2.4 times slower per plan. It expanded about as many
+states per plan as the true map has free cells, but only about 50–85 % of the optimistic map it
+plans on (unknown cells count as open; development measurement, `docs/plan.md` §3.15.1). Its
+distance heuristic prunes too little to pay for LAO\*'s per-round overhead
+([`docs/algorithm.md`](docs/algorithm.md) §8).
+
 ---
 
 ## Extensions (brief §8)
@@ -400,10 +412,11 @@ behaves bit-identically ("rule zero", [`docs/plan.md`](docs/plan.md) §3.14).
 - **Multiple survivors (§8.5).** The robot visits survivors in **greedy nearest-first** order
   and re-evaluates the order after each rescue. The order is compared with the brute-force
   optimal tour.
-- **Noisy sensing (§8.3).** The sensor misses debris with probability ε (false negatives only),
-  and the robot keeps a **Bayesian per-cell debris probability**. Collisions become possible.
-  Round 2 adds an optional false-positive rate ε_fp (two-sided noise, claim X6, plan §3.15.2;
-  default 0, which leaves the round-1 missions unchanged).
+- **Noisy sensing (§8.3).** The sensor misses debris with probability ε, and the robot keeps a
+  **Bayesian per-cell debris probability**. Collisions become possible. Round 2 adds an optional
+  false-positive rate ε_fp (two-sided noise): a free cell can be read as debris, so a *phantom
+  wall* may block every route, and the robot then falls back to a relaxed passability in which
+  only near-certain debris blocks. The default ε_fp = 0 leaves the round-1 missions unchanged.
 
 Each extension runs with an AND-OR planner (`search_andor`) or with A\* + replan
 (`search_astar`):
@@ -411,12 +424,23 @@ Each extension runs with an AND-OR planner (`search_andor`) or with A\* + replan
 ```bash
 python -m rescue.ext.demo --mode search     # one mission, printed; also --mode multi, --mode noisy
 python -m rescue.sim --ext search           # the same mission in the simulator (X cycles the modes)
+python -m rescue.sim --ext noisy --fp 0.1   # noisy sensing with false positives (phantoms)
 python -m rescue.ext.experiments --quick    # smoke run (10×10), writes results/ext/quick/ (not committed)
 python -m rescue.ext.experiments            # full run (experiments/ext.yaml), writes results/ext/
 ```
 
-The full run ([`experiments/ext.yaml`](experiments/ext.yaml), 14,400 missions on 15×15 maps)
-checks five claims, all **supported** ([`results/ext/EXTENSIONS.md`](results/ext/EXTENSIONS.md)):
+In the simulator, `X` cycles the modes (search → multi → noisy), `1` / `2` pick `search_andor` /
+`search_astar`, and the other keys work as in the core simulator (the map editor is disabled).
+
+![Extension simulator, multi mode: one survivor rescued (green ring and tick), the robot heading to the next one (flagged)](docs/figures/ext_multi.png)
+
+*`python -m rescue.sim --ext multi`: three survivors, the first rescued at step 20; the flag
+marks the next target of the greedy nearest-first order.*
+
+The full run ([`experiments/ext.yaml`](experiments/ext.yaml), 20,800 missions on 15×15 maps)
+checks six claims, all **supported** ([`results/ext/EXTENSIONS.md`](results/ext/EXTENSIONS.md)).
+It is a rerun with the round-2 code that reproduced all 14,400 earlier rows exactly (timing
+columns aside) and added the 6,400 missions of the false-positive block:
 
 | # | Claim | Headline number |
 |---|---|---|
@@ -425,11 +449,14 @@ checks five claims, all **supported** ([`results/ext/EXTENSIONS.md`](results/ext
 | X3 | the greedy order is within 10 % of the optimal tour | k = 4: ×1.027 [1.022, 1.033] |
 | X4 | noise makes collisions possible, success stays ≥ 95 % at ε = 0.1 | 2719 bumps in 2400 runs at ε > 0; 100.0% [99.5%, 100.0%] (800/800) at ε = 0.1 |
 | X5 | AND-OR has at most 0.1 more collisions per mission than A\* + replan | −0.04 bumps per mission [−0.11, +0.03] |
+| X6 | with false positives up to ε_fp = 0.1, success stays ≥ 95 % | 100.0% [99.5%, 100.0%] (800/800) at ε_fp = 0.05 and at 0.1; cost +46.53 steps [+40.79, +52.27] at ε_fp = 0.1 |
 
-One caveat: in unknown-location search the two agents take the same number of steps in almost
+Two caveats. In unknown-location search the two agents take the same number of steps in almost
 every paired mission, because following the frontier dominates, yet AND-OR still costs far more
-planning time. The write-up, with the algorithms, the termination argument, plots and
-limitations, is [`docs/extensions.md`](docs/extensions.md).
+planning time. And under false positives AND-OR loses its step advantage over A\* + replan: at
+ε_fp = 0.1 it takes +6.38 steps [+0.87, +11.90] more per mission, paired on the same maps.
+The write-up, with the algorithms, the termination argument, plots and limitations, is
+[`docs/extensions.md`](docs/extensions.md).
 
 ---
 
@@ -472,8 +499,9 @@ Rescue-Robot/
 │   ├── world.py            the true world: seeded outcome draws, sensor, aftershocks
 │   ├── plan.py             plan nodes (Goal, Loop, Ref, Act), policy, pretty-print, tree, stats
 │   ├── planners/           andor, bfs, astar, validate, strong_cyclic_fixpoint,
-│   │                       dstar_lite, value_iteration
-│   ├── agents/             contingency (andor), astar_fixed, astar_replan, dstar_lite, vi_expected
+│   │                       dstar_lite, value_iteration, lao_star
+│   ├── agents/             contingency (andor), astar_fixed, astar_replan, dstar_lite, vi_expected,
+│   │                       lao_expected
 │   ├── runner.py           mission loop, StepEvent, metrics, trace and summary formatting
 │   ├── runs.py             run files (JSON) for replay
 │   ├── mapgen.py           scenario generators and their CLI
@@ -484,16 +512,18 @@ Rescue-Robot/
 │                           multi-survivor maps, ext demo and experiment harness
 ├── tests/                  unit, property, invariant, statistical and headless UI tests
 ├── maps/                   deck_demo, deck_figure and sample generated maps (ASCII)
-├── experiments/            main.yaml (full run), quick.yaml (smoke run), ext.yaml, ext_quick.yaml
+├── experiments/            main.yaml (full run), quick.yaml (smoke run), ext.yaml, ext_quick.yaml,
+│                           lao.yaml (LAO* run)
 ├── results/                raw.csv, summary.csv, HYPOTHESES.md, run_meta.json, plots/
-│   └── ext/                extension run: raw.csv, summary.csv, EXTENSIONS.md, run_meta.json, plots/
+│   ├── ext/                extension run: raw.csv, summary.csv, EXTENSIONS.md, run_meta.json, plots/
+│   └── lao/                LAO* run: raw.csv, summary.csv, LAO.md, HYPOTHESES.md, run_meta.json, plots/
 ├── docs/
 │   ├── brief.md            original project specification
 │   ├── plan.md             interface contract and design decisions
 │   ├── architecture.md     module map, data flow, determinism, extension points
-│   ├── algorithm.md        the planning algorithm and its correctness
+│   ├── algorithm.md        the planning algorithm, its correctness, and LAO*
 │   ├── results.md          results chapter
-│   ├── extensions.md       extensions chapter (brief §8.3–§8.5)
+│   ├── extensions.md       extensions chapter (brief §8.3–§8.5, incl. two-sided noise)
 │   ├── web.md              browser demo (pygbag): build, serve, publish, limitations
 │   └── figures/            GIF and screenshots
 ├── scripts/make_figures.py regenerates the simulator figures in docs/figures/
@@ -591,12 +621,19 @@ From [`docs/results.md`](docs/results.md) §5 and the project scope:
   machine with 18 worker processes; ratios between agents are more reliable than absolute values.
 - **Statistics:** no multiplicity correction; several analyses are post hoc, and H7 was added
   after an earlier full run had shown H3's gap at p = 0.
-- **Not implemented:** terrain-aware AND-OR costs and maps larger than 30×30 in the experiments
-  (LAO\* is implemented, as the stretch agent `lao_expected`: plan §3.15.1). The harness does not record AND-OR rollbacks. The browser build cannot record,
-  offers only the map files with `M` (no scipy, so no generators), and has mouse offsets at
-  fractional device-pixel ratios ([`docs/web.md`](docs/web.md)). The extensions (unknown survivor location, multiple survivors, noisy sensing) have
-  their own limitations: false negatives only, no belief-space (POMDP) planning, a known survivor
-  count, and no simulator UI ([`docs/extensions.md`](docs/extensions.md) §7).
+- **LAO\* did not pay off.** It is implemented (stretch agent `lao_expected`) and finds the same
+  plans as value iteration, but on these maps it is 1.6–2.4× slower per plan: on the nearly
+  open optimistic map its heuristic prunes only about 15–50 % of the states, too little to pay
+  for its per-round overhead ([`docs/algorithm.md`](docs/algorithm.md) §8).
+- **Not implemented:** terrain-aware AND-OR costs and maps larger than 30×30 in the experiments.
+  The harness does not record AND-OR rollbacks. The browser build cannot record, offers only the
+  map files with `M` (no scipy, so no generators), has mouse offsets at fractional device-pixel
+  ratios, and leaves the extensions out; it has not been deployed to GitHub Pages
+  ([`docs/web.md`](docs/web.md) describes how). The extensions (unknown survivor location,
+  multiple survivors, two-sided noisy sensing) have their own limitations: no belief-space
+  (POMDP) planning, a known survivor count, no protection against flip-flopping beliefs under
+  false positives, and no extension support in the comparison and replay apps
+  ([`docs/extensions.md`](docs/extensions.md) §9).
 
 ---
 
@@ -632,4 +669,4 @@ extension points. In short:
 (AND-OR search, cyclic plans). A. Cimatti, M. Pistore, M. Roveri and P. Traverso (2003),
 strong-cyclic planning (the fixpoint reference planner). S. Koenig and M. Likhachev (2002),
 D\* Lite. E. Hansen and S. Zilberstein (2001), LAO\*: solutions with loops. Full list in
-[`docs/algorithm.md`](docs/algorithm.md) §8.
+[`docs/algorithm.md`](docs/algorithm.md) §9.

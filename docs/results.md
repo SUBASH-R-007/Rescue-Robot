@@ -10,7 +10,10 @@ each claim of the proposal deck against it. Every number comes from one of five 
   own one-liner;
 * a reproducible computation on `results/raw.csv`.
 
-Numbers of the last kind come with the one-line Python (standard library plus `scipy`, no
+The one exception is §3.10, which summarises a separate LAO\* run and quotes
+`results/lao/LAO.md`.
+
+Numbers computed on `results/raw.csv` come with the one-line Python (standard library plus `scipy`, no
 pandas) that produced them, in an HTML comment beside them. Run it from the repository root.
 Coordinates and agent names follow `docs/plan.md`; the algorithm is described in
 `docs/algorithm.md`. Terms and decision codes (D3, D10, …) are explained in §1.5.
@@ -674,6 +677,31 @@ size. The geometric mean of the per-map ratio VI / `andor` of time per mission i
 30×30, where the CI includes 1. So VI is not cheaper either.
 <!-- python -c "import csv,math,statistics as s;from scipy.stats import t;R=[r for r in csv.DictReader(open('results/raw.csv')) if r['experiment']=='scaling'];d={};[d.setdefault((r['rows'],r['seed']),{}).__setitem__(r['agent'],r) for r in R];[print(n,len(x),round(math.exp(m),2),round(math.exp(m-h),2),round(math.exp(m+h),2)) for n in ('10','15','20','25','30') for x in [[math.log(float(v['vi_expected']['planning_ms'])/float(v['andor']['planning_ms'])) for k,v in d.items() if k[0]==n]] for m in [s.mean(x)] for h in [t.ppf(.975,len(x)-1)*s.stdev(x)/len(x)**.5]]" -->
 
+### 3.10 LAO\*: a separate run
+
+LAO\* (brief §8.1) was added after this run, as the stretch agent `lao_expected`
+(`docs/plan.md` §3.15.1). It is **not part of the run this chapter reports**. It has its own
+config, `experiments/lao.yaml`, and its own results in `results/lao/` (`LAO.md`,
+`run_meta.json`). That run used code commit `cfb50a2`, and its results were committed
+separately in `9012a98`. It ran `andor`, `vi_expected` and `lao_expected` on 500 tasks
+(random_rubble and maze_corridors, 10×10 to 30×30, p = 0.2, 50 maps per scenario and size),
+1,500 missions in all, with the same base seed and harness. Its three headline numbers
+(`results/lao/LAO.md`):
+
+* **Identical missions:** `lao_expected` and `vi_expected` played the same mission on 500 of
+  500 tasks (every metric except timing and `nodes_expanded`). Both compute the same
+  expected-steps optimum.
+* **Slower:** LAO\* needed 1.6 to 2.4 times VI's planning time per plan (ratio of means 1.59–2.38
+  per scenario and size), slower at every size.
+* **Little pruning:** it expanded 98.8 % to 104.7 % as many states per plan as the *true* map
+  has free cells (pooled per size). Unknown cells are planned as open, so the map LAO\* searches
+  is larger and nearly open. Against that planning map it expanded about 50–85 % of the free
+  cells per plan (development measurement, `docs/plan.md` §3.15.1; the run records only the
+  true map's free cells): the BFS-distance heuristic rules out some of the many equally short
+  routes, but too few to pay for LAO\*'s per-round overhead.
+
+`docs/algorithm.md` §8 describes the algorithm, its tests and the reasons for this result.
+
 ---
 
 ## 4. Invariants observed
@@ -758,11 +786,11 @@ Over all 99,400 missions of the run:
 
 **What was not done:**
 
-* no noisy sensing;
-* no unknown survivor location;
-* no multiple survivors;
+* no noisy sensing, no unknown survivor location and no multiple survivors (these extensions
+  have their own run and chapter, `docs/extensions.md`);
 * no terrain-aware AND-OR costs (an optional extension of brief §8); LAO\* was added later as
-  the stretch agent `lao_expected` (plan §3.15.1) and is not part of this run;
+  the stretch agent `lao_expected` (plan §3.15.1) and has its own run (§3.10), not part of
+  this one;
 * no sensor radius r = 0 in the experiments (it is used only in tests);
 * no matched-tie-break versions of the aftershock, sensor and replan-mode blocks;
 * no measurement of AND-OR rollbacks in the harness;

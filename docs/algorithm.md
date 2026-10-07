@@ -2,8 +2,10 @@
 
 This chapter of the project report describes how the rescue robot plans, and argues that its
 plans are correct. It covers the planner in `src/rescue/planners/andor.py`, the plan structures
-in `src/rescue/plan.py` and the model in `src/rescue/model.py`. Design decisions are cited by
-their numbers in `docs/plan.md` (D1 to D17), and the original specification is `docs/brief.md`.
+in `src/rescue/plan.py` and the model in `src/rescue/model.py`. §8 adds the LAO\* stretch
+planner of round 2 (`src/rescue/planners/lao_star.py`) and its measured result. Design decisions
+are cited by their numbers in `docs/plan.md` (D1 to D21), and the original specification is
+`docs/brief.md`.
 
 **Conventions.** Coordinates are written 1-indexed as `(row, col)`, the same way the program
 prints them (internally the code is 0-indexed). Maths uses plain notation:
@@ -1040,7 +1042,200 @@ What the table shows:
 
 ---
 
-## 8. References
+## 8. LAO\* (brief §8.1)
+
+Brief §8.1 suggests LAO\* or value iteration as an alternative to set-based AND-OR search. The
+core already has value iteration in the stretch agent `vi_expected`: it computes the
+expected-steps optimal policy by sweeping every free cell. Round 2 adds **LAO\*** (Hansen &
+Zilberstein 2001), which solves the same problem by heuristic search from the robot's cell, as
+the stretch agent `lao_expected` (`planners/lao_star.py`, `agents/lao_expected.py`;
+`docs/plan.md` §3.15.1). The agent uses the same replanning triggers and the same D10
+anticipation as `andor` and `vi_expected`. It is not in `AGENT_NAMES` (D19).
+
+### 8.1 The problem
+
+LAO\* and value iteration solve one **stochastic shortest path** problem on the frozen belief
+snapshot, with unknown cells assumed open, unit step costs and the *true* outcome probabilities
+of §1.2 (per cell where terrain changes `p`):
+
+```
+V(g) = 0
+V(s) = min over a of [ 1 + Σ_{s'} P(s' | s, a) · V(s') ]
+```
+
+`V*(s)` is the minimum expected number of steps from `s` to the survivor. Unlike AND-OR, which
+uses only the support of each outcome distribution (§1.3) and accepts any strong-cyclic plan,
+this formulation uses the probabilities and asks for the *cheapest* policy. A greedy policy of
+`V*` reaches the goal with probability 1, so it is strong cyclic as well.
+
+### 8.2 The algorithm as implemented
+
+The implementation is the original LAO\* of the paper, with **all** tips expanded in each round.
+A *best partial solution graph* is the set of states reachable from the start when every
+expanded state follows its greedy action, i.e. the first action in `N, E, S, W` order whose
+backed-up value is within `VI_TIE_TOLERANCE` of the minimum (value iteration's rule). A *tip*
+is a non-goal state of that graph that has not been expanded yet.
+
+```
+LAO_STAR(model, start):
+    tabulate P(s' | s, a) for every free cell          -- once, vectorised (≈ one VI sweep)
+    V ← h;  expanded ← ∅
+    loop:
+        G ← best partial solution graph from start      -- BFS over greedy-action outcomes
+        T ← tips of G
+        if T ≠ ∅:                                       -- expansion round
+            expanded ← expanded ∪ T
+            Z ← non-goal states of G                    -- ⊇ ancestors of T, ⊆ expanded
+            value-iterate (Jacobi) on Z until residual < LAO_EXPANSION_TOLERANCE (0.5 steps)
+            continue
+        -- convergence test: G is closed (no tips)
+        value-iterate on G until residual < VI_TOLERANCE
+        G' ← best partial solution graph from start
+        if G' has a tip:              continue          -- back to expansion
+        if states(G') ≠ states(G):    G ← G'; repeat the test
+        else: return V, greedy policy on G
+```
+
+Implementation notes:
+
+* **Expansion** adds a state's outcomes under every action to the explicit graph. Their values
+  stay at `h` until they are backed up. Building `G` uses `scipy.sparse.csgraph`'s
+  breadth-first order. scipy is imported lazily (the browser build has none) and warmed up
+  when the planner is constructed, so the import never lands in a plan's measured time.
+* **`LAO_EXPANSION_TOLERANCE` steers only which states are expanded**, never the result: the
+  final convergence test always uses `VI_TOLERANCE`. Its value 0.5 was chosen for speed, after
+  timing 0.01, 0.1, 0.5, 2 and ∞ on recorded planning calls (`config.py`). That is a choice
+  made with data in view, in LAO\*'s favour. It did not make LAO\* faster than VI (§8.5).
+* **Caps.** `LAO_MAX_ITERATIONS` (expansion rounds) and `LAO_MAX_CONVERGENCE_TESTS` are
+  separate bug guards. Each expansion round adds at least one new state, so any grid finishes
+  long before the cap. If a cap is hit, `converged` is False and a warning is logged.
+* **Interface.** `LaoStarPlanner` has the interface of `ValueIterationPlanner` and
+  `AndOrPlanner`: a start with `h = ∞` gives no policy, `PlannerConfig.validate` checks the
+  policy with `is_strong_cyclic`, and `fallback_to_reference` can fall back to the fixpoint
+  planner (§6.4). `nodes_expanded` reports expanded states. That is a different unit from
+  AND-OR expansions and VI backups (D19).
+
+### 8.3 The heuristic
+
+`h(s) = d(s)`, the BFS distance to the goal on the planning map. By (R1) every outcome moves the
+robot at most one cell, so no policy can reach the goal in fewer than `d(s)` steps, whatever
+nature does:
+
+* **Admissible:** `h(s) ≤ V*(s)`.
+* **Consistent:** `h(s) ≤ 1 + Σ P(s' | s, a)·h(s')` for every action, because every successor
+  has `h(s') ≥ h(s) − 1`. Backed-up values therefore only rise towards `V*`.
+
+At termination the best solution graph is closed: every outcome of every policy state is a
+policy state or the goal. Its values satisfy the Bellman equation within the tolerance, and they
+are lower bounds. So they equal the optimal values on that graph, the start value equals value
+iteration's optimum, and the greedy policy is proper.
+
+The heuristic is exact at `p = 0`. With `p > 0` it is loose. A move makes progress only when
+the robot arrives (probability `1 − p`), and slips and skids make none, so on open ground `V*`
+exceeds `d` by up to roughly a factor `1/(1 − p)` (1.25 at `p = 0.2`). §8.5 shows why this
+matters.
+
+### 8.4 Correctness evidence
+
+`tests/test_lao.py`:
+
+* **Optimality against value iteration** on 210 seeded random maps (3 to 15 cells a side,
+  `p` uniform in [0, 0.4], every third map with high-slip terrain): the LAO\* start value and
+  the value of *every* state of its solution graph equal VI's within 1e-6. The exact expected
+  cost of the LAO\* policy, from a linear solve of its absorbing Markov chain on the closed
+  envelope, also equals VI's optimum within 1e-6. Each policy is closed and passes
+  `is_strong_cyclic`.
+* **Heuristic:** `h ≤ V*` wherever finite; at `p = 0` the value is the BFS distance; a 1×N
+  corridor matches its closed form.
+* **Edge cases and limits:** unreachable start, start = goal, start on debris, both caps, and
+  invalid tolerances (`ValueError`). Expanded states never exceed the free states reachable from
+  the start, and on true (fully known) 20×20 maps (open grid and random_rubble) LAO\* leaves
+  some free state unexpanded on at least 15 of 20 maps.
+* **Agent:** `lao_expected` missions have 0 bumps, 0 unplanned states and 0 fallbacks. Its
+  expected steps equal `vi_expected`'s on the first plan, and its missions are deterministic.
+
+### 8.5 Measured: the same plans as value iteration, but slower
+
+Source: `results/lao/LAO.md`, a separate run of `experiments/lao.yaml` with the core harness
+(`results/lao/run_meta.json`: code commit `cfb50a2`, 500 tasks, 1,500 missions, 18 worker
+processes, 179.6 s). The run covers random_rubble and maze_corridors at 10×10 to 30×30,
+`p = 0.2`, r = 1, eager replanning and 50 maps per scenario and size, with `andor`,
+`vi_expected` and `lao_expected` on the same maps and outcome streams. The analysis is
+descriptive: no claim depends on it.
+
+**Plan quality.** All three agents rescued the survivor in 500 of 500 missions. `lao_expected`
+and `vi_expected` played **identical missions on all 500 tasks** (every metric except timing
+and `nodes_expanded`), so the paired step difference is 0.000 [0.000, 0.000]. This is an
+observation, not a guarantee: the two compute the same optimum, but they could break an exact
+tie between equally good actions differently. Against `andor`, LAO\* took +1.394 steps
+[−0.713, +3.501] (293 of 500 maps differ). That is the core H6 result again: the
+expected-steps optimal plan does not beat the first strong-cyclic plan here
+(`docs/results.md` §2.7).
+
+**Planning time per plan** (ms, means with 95 % CIs, both scenarios pooled; wall-clock with 18
+worker processes running at once):
+
+| Grid | `andor` | `vi_expected` | `lao_expected` | LAO\* / VI (ratio of means) | LAO\* / VI (mean paired ratio) |
+|---|---|---|---|---|---|
+| 10×10 | 4.9 [4.3, 5.6] | 9.9 [9.3, 10.6] | 21.9 [20.4, 23.3] | 2.21 | 2.27 [2.16, 2.37] |
+| 15×15 | 15.4 [13.4, 17.3] | 20.5 [19.5, 21.5] | 41.9 [39.5, 44.2] | 2.04 | 2.06 [1.98, 2.15] |
+| 20×20 | 36.9 [31.2, 42.6] | 38.9 [36.4, 41.4] | 64.9 [60.1, 69.7] | 1.67 | 1.70 [1.61, 1.80] |
+| 25×25 | 47.1 [39.9, 54.2] | 48.0 [46.1, 49.8] | 82.8 [78.4, 87.1] | 1.72 | 1.73 [1.66, 1.80] |
+| 30×30 | 93.9 [77.6, 110.2] | 72.1 [69.4, 74.7] | 119.9 [113.7, 126.1] | 1.66 | 1.66 [1.60, 1.72] |
+
+LAO\* was **slower than value iteration in every scenario and size**: 1.6 to 2.4 times per plan
+(ratio of means 1.59–2.38 per scenario and size, mean paired ratio 1.58–2.40; `LAO.md` §2). It
+was also slower than `andor` everywhere.
+
+**States expanded.** Per plan, LAO\* expanded 98.8 % to 104.7 % as many states as the **true
+map** has free cells (pooled per size; 93.8 % to 114.4 % per scenario and size, `LAO.md` §3).
+That is the wrong yardstick for pruning. LAO\* plans on the optimistic belief map, where unknown
+cells, including undiscovered debris, count as open, so that map has more free cells than the
+true one (which is why the share can exceed 100 %). Measured against the map it actually
+searches, LAO\* expanded only about 50–65 % (maze_corridors) and 70–85 % (random_rubble) of the
+free cells per plan. That is a development measurement inside missions (`docs/plan.md`
+§3.15.1), not a column of the committed run, which records only the true map's free cells.
+**LAO\* does prune**: it skips roughly 15–50 % of the planning map's states, all of which value
+iteration sweeps. The pruning is not enough to pay for its per-round overhead (below).
+
+![Total planning time per mission against grid size for andor, vi_expected and lao_expected](../results/lao/plots/planning_time_vs_size.png)
+
+*Total planning time per mission (geometric mean, log scale), 100 missions per point, both
+scenarios pooled, wall-clock with 18 worker processes. LAO\* lies above value iteration at every
+size. AND-OR is the cheapest of the three at 10×10 and close to VI at 30×30. The missions of
+LAO\* and VI are identical, so the gap is pure planning overhead.*
+
+**Why LAO\* does not pay off here.** Heuristic search wins when the heuristic lets it ignore
+most of the state space. On these maps it ignores only a minority of it, for two reasons, and
+the third reason is why that saving does not cover its extra costs:
+
+1. **The planning map is nearly open.** The belief treats unknown cells as open (§1.4). Early
+   in a mission almost every cell is unknown, so LAO\* plans on something close to an open grid
+   with a few known obstacles. Between two cells of an open grid there are very many equally
+   short routes.
+2. **The heuristic is too optimistic to choose between them.** `h = d` underestimates `V*` by up
+   to about `1/(1 − p)` (§8.3). Once a route has been expanded and backed up, its values rise
+   above `d`. An unexpanded cell on a parallel, equally short route still shows its optimistic
+   `h = d`, so it looks cheaper. The best partial graph switches to it, and the pattern repeats
+   until most of the planning map's cells have been expanded.
+3. **Value iteration is cheap at this size.** VI is a few vectorised numpy sweeps over at most
+   900 states (30×30). LAO\* does the same tabulation as one VI sweep, then adds per-round work
+   that VI does not have: rebuilding the best partial graph, value iteration on `Z` after each
+   expansion round, and convergence tests. With most states expanded anyway, the sweeps it
+   saves on the unexpanded states cost less than this bookkeeping.
+
+The ratio falls from about 2.2 at 10×10 to about 1.7 from 20×20 on. A plausible reading is that
+the fixed per-call costs weigh less on larger maps; the run does not measure it. LAO\* would be
+expected to pay off on much larger state spaces, on maps whose known structure leaves few
+routes, or with a tighter heuristic. One tighter consistent heuristic is noted in
+`docs/plan.md` §3.15.1: `d(s) / (1 − 0.75·p_min)`, because every step slips in place with
+probability at least `0.75·p_min`. It would shrink the expansions without changing the
+optimum. It was not implemented, and the plan expects it to narrow the gap rather than reverse
+it; this run does not measure it.
+
+---
+
+## 9. References
 
 1. S. Russell and P. Norvig. *Artificial Intelligence: A Modern Approach*, 4th edition.
    Pearson, 2020. §4.3 "Search with Nondeterministic Actions": Fig. 4.11 (AND-OR search) and
