@@ -40,3 +40,15 @@ results/*
 !results/plots/
 results/plots/*
 !results/plots/*.png
+# Extension experiments (python -m rescue.ext.experiments): the full run's raw.csv, summary,
+# claims, run metadata and plots are committed; results/ext/quick/ (--quick) and anything else
+# under results/ext/ are ignored.
+!results/ext/
+results/ext/*
+!results/ext/raw.csv
+!results/ext/summary.csv
+!results/ext/EXTENSIONS.md
+!results/ext/run_meta.json
+!results/ext/plots/
+results/ext/plots/*
+!results/ext/plots/*.png

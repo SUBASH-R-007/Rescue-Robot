@@ -93,6 +93,11 @@ class World:
         """True when the robot stands on the survivor cell."""
         return self.pos == self._grid.survivor
 
+    @property
+    def on_survivor(self) -> Pos | None:
+        """The survivor cell the robot stands on (any of ``grid.survivors``), else ``None``."""
+        return self.pos if self.pos in self._grid.survivors else None
+
     def true_cell(self, p: Pos) -> Cell:
         """True contents of in-grid cell ``p``."""
         if not self._grid.in_bounds(p):
@@ -140,9 +145,16 @@ class World:
         )
 
     def _aftershock(self, robot: Pos) -> tuple[Pos, ...]:
-        """Maybe drop debris on unsensed open cells, keeping the survivor reachable (D9).
+        """Maybe drop debris on unsensed open cells, keeping every survivor reachable (D9).
 
         When enabled, ``(u, permutation)`` is drawn every step whether or not an event fires.
+        Debris never lands on a survivor (only ``OPEN`` cells qualify) and a candidate is kept
+        only if every cell of ``grid.survivors`` stays reachable from the robot; with a single
+        survivor this is exactly one reachability check per candidate, as before (plan §3.14).
+        The World does not track rescues, so already-rescued survivors still count. If some
+        survivor is unreachable from the start, no candidate ever qualifies and no aftershock
+        debris is placed for the whole mission (the draws are still consumed, so the streams
+        stay aligned); a single-survivor unsolvable map behaved the same way before §3.14.
         """
         config = self.aftershock
         if not config.enabled:
@@ -154,7 +166,8 @@ class World:
             return ()
         cells = self._grid.cells
         excluded = set(self._footprint(robot))
-        excluded.update((robot, self._grid.start, self._grid.survivor))
+        survivors = self._grid.survivors
+        excluded.update((robot, self._grid.start, *survivors))
         passable = self._grid.passable_mask()
         added: list[Pos] = []
         for index in order.tolist():
@@ -164,7 +177,7 @@ class World:
             if p in excluded or cells[p] != Cell.OPEN:
                 continue
             passable[p] = False
-            if reachable(passable, robot, self._grid.survivor):
+            if all(reachable(passable, robot, s) for s in survivors):
                 added.append(p)
             else:
                 passable[p] = True

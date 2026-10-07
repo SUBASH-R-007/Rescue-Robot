@@ -302,5 +302,11 @@ class ProblemModel:
 
     @classmethod
     def from_belief(cls, belief: BeliefMap, transition: TransitionModel) -> ProblemModel:
-        """Build the model from a belief map (optimistic: UNKNOWN counts as passable)."""
+        """Build the model from a belief map (optimistic: UNKNOWN counts as passable).
+
+        Raises ``ValueError`` when the belief has no known survivor (``belief.survivor is
+        None``, search extension, plan §3.14): there is no goal to plan for.
+        """
+        if belief.survivor is None:
+            raise ValueError("cannot build a ProblemModel from a belief without a survivor goal")
         return cls(belief.passable_mask(), belief.survivor, transition)

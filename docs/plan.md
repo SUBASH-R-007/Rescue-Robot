@@ -60,17 +60,22 @@ src/rescue/
   viz/  __init__.py theme.py grid_view.py tree_view.py panel.py sim_app.py compare_app.py
         replay_app.py record.py export.py (plan-tree PNG via matplotlib)          (§3.11)
   experiments/ __init__.py __main__.py spec.py run.py stats.py hypotheses.py plots.py (§3.13)
+  ext/  __init__.py sensing.py scenarios.py agents.py mission.py demo.py experiments.py
+        claims.py plots.py   optional extensions, brief §8.3–§8.5                      (§3.14)
 scripts/make_figures.py  regenerates the simulator figures in docs/figures/ headless (§3.11)
 maps/   deck_demo.txt deck_figure.txt (the deck's maps) + mapgen samples rubble_01.txt
         building_01.txt flooded_01.txt maze_01.txt (each header = the command that regenerates it)
-experiments/ main.yaml (full run) quick.yaml (--quick)
+experiments/ main.yaml (full run) quick.yaml (--quick) ext.yaml ext_quick.yaml (§3.14)
 results/ raw.csv summary.csv HYPOTHESES.md run_meta.json plots/*.png   committed full run (§3.13)
          quick/                                                        --quick output (ignored)
+         ext/ raw.csv summary.csv EXTENSIONS.md run_meta.json plots/*.png  extensions (§3.14);
+              ext/quick/ ignored
 runs/ recordings/        run files (--save-run, demo --save) and GIF/MP4/PNG output (ignored)
 tests/  conftest.py helpers_maps.py helpers_phase2.py and test_{config,grid,model,belief,world,
         plan,andor,validate,fixpoint,bfs,astar,properties,agents,runner,invariants,demo,runs,
         viz,mapgen,stress,stretch_agents,compare,experiments}.py (§5), plus
-        test_coverage_error_paths.py (Phase 7: error paths and CLI branches run in-process)
+        test_coverage_error_paths.py (Phase 7: error paths and CLI branches run in-process),
+        test_ext.py test_ext_core_hooks.py test_ext_experiments.py (§3.14)
 docs/   brief.md (original specification) plan.md architecture.md algorithm.md results.md
         figures/ deck_demo.gif sim_deck_demo.png sim_deck_figure.png plan_tree_deck_demo.png
                  compare_collapsed_building.png
@@ -171,6 +176,8 @@ class TrueGrid:
 *Clarification (P1):* `TrueGrid` rejects (ValueError) any grid that could not round-trip: start
 must be OPEN, survivor the only SURVIVOR cell, start ≠ survivor, and neither may be high-slip
 (mapgen must not mark them `~`).
+*Extension hook:* `extra_survivors`, `survivors`, `from_ascii/load(multi=True)` (several 'P')
+are specified in §3.14; with the defaults the behaviour above is unchanged.
 
 ### 3.3 `model.py`
 ```python
@@ -225,6 +232,8 @@ class BeliefMap:
 ```
 *Clarification (P1):* `explored_count` includes the survivor cell (known from t = 0, so it
 starts at 1); `update`/`get` raise ValueError on off-grid positions, `update` also on UNKNOWN.
+*Extension hook:* `BeliefMap(rows, cols, None)` (nothing pre-marked) and `survivors_seen()`, plus
+`ProblemModel.from_belief` raising ValueError on such a belief, are specified in §3.14.
 
 ### 3.5 `world.py`
 ```python
@@ -253,6 +262,8 @@ placed if too few qualify; `aftershock_events` counts steps that placed ≥ 1 ce
 aftershocks disabled (`not cfg.enabled`) no aftershock draws are made — the stream is private,
 so CRN is unaffected. A SLIPPED step has `target == prev`, `blocked=False`; an off-grid target
 gives `blocked=True, hit_debris=False`.
+*Extension hook:* aftershocks keep every survivor of `grid.survivors` reachable and debris-free,
+and `World.on_survivor` reports the survivor cell under the robot (§3.14).
 
 ### 3.6 `plan.py`
 ```python
@@ -979,6 +990,144 @@ Matplotlib's Agg canvas only (no pyplot state).
 settings that are not model parameters (worker reservation, chunking, progress, timing
 decimals, plot styling) live as module constants in `run.py`, `stats.py`, `hypotheses.py` and
 `plots.py`.
+
+---
+
+### 3.14 Optional extensions (`ext/`, brief §8.3–§8.5)
+
+**Rule zero: the core results must not move.** With default arguments every core module
+behaves bit-identically to commit `c709053`: `python -m rescue.demo` output is byte-identical
+and `python -m rescue.experiments --quick` writes a `raw.csv` identical to the one produced
+before the change except for the timing columns (`planning_ms`, `elapsed_ms`). Extensions
+live in `src/rescue/ext/` and only use the core through the small hooks below.
+
+**Core hooks (backward compatible).**
+```python
+# grid.py
+@dataclass class TrueGrid: ...existing fields...; extra_survivors: tuple[Pos, ...] = ()
+    survivors -> tuple[Pos, ...]        # (survivor, *extra_survivors)
+    # invariant: SURVIVOR cells == set(survivors); extras distinct, in bounds, != start
+    @classmethod from_ascii(text, name="", *, multi=False)  # multi=True: >= 1 'P'; the first
+    #   in row-major order is `survivor`, the rest `extra_survivors`; multi=False: exactly one
+    @classmethod load(path, *, multi=False); to_ascii() writes every 'P'
+    add_debris(p) refuses every survivor; copy()/__eq__ include extra_survivors
+# belief.py
+class BeliefMap: __init__(rows, cols, survivor: Pos | None)   # None: nothing pre-marked
+    survivors_seen() -> tuple[Pos, ...]  # cells currently believed SURVIVOR, row-major
+# model.py
+ProblemModel.from_belief(belief, transition) raises ValueError when belief.survivor is None
+# world.py
+World._aftershock keeps EVERY survivor in grid.survivors reachable from the robot and never
+    drops debris on any of them (single-survivor maps: same calls, same draws, same result);
+    rescued survivors still count, and if one survivor starts unreachable no aftershock debris
+    is ever placed (draws still consumed), as for an unsolvable single-survivor map
+World.on_survivor -> Pos | None          # the survivor cell the robot stands on, if any
+```
+
+**`ext/sensing.py` (§8.3 noisy sensing).**
+```python
+class NoisySensor:  __init__(false_negative: float, seed: int, rows: int, cols: int)
+    # own stream: np.random.default_rng(SeedSequence([seed, NOISE_STREAM_KEY]))
+    observe(percept: Percept, exempt: Collection[Pos] = ()) -> Percept
+    # every call draws rows*cols uniforms (ALWAYS); cell (r, c) uses u[r*cols + c], so call n
+    # gives a cell the same draw in every mission on the map (CRN per (t, cell), whatever the
+    # path or footprint); off-grid percept cell -> ValueError;
+    # a true DEBRIS cell is reported OPEN with prob false_negative; OPEN/SURVIVOR never change;
+    # exempt cells (touch-sensed bumps) are never flipped. No false positives.
+class ProbBelief:   __init__(rows, cols, survivor: Pos | None, prior_debris, false_negative,
+                             threshold)
+    p_debris: np.ndarray (float64), observed: np.ndarray (bool)
+    update(percept, touched: Collection[Pos] = ()) -> BeliefUpdate   # Bayes per cell:
+    #   obs OPEN:  P <- e*P / (e*P + (1 - P));  obs DEBRIS or touched: P <- 1;  SURVIVOR: P <- 0
+    #   contradiction = a cell that was believed passable (P < threshold) and now is not
+    passable_mask() -> P < threshold;  get(p) -> Cell (categorical view: UNKNOWN if never
+    observed, DEBRIS if P >= threshold, SURVIVOR, else OPEN);  survivors_seen(); explored_count()
+```
+With `false_negative = 0` a `ProbBelief` makes exactly the same passability decisions as a
+`BeliefMap` (unknown cells keep the prior `< threshold`, so they stay optimistic). `ProbBelief`
+itself accepts a prior `≥ threshold` (every unknown cell impassable); `ExtMission` rejects it.
+
+**`ext/scenarios.py` (§8.5 multiple survivors).** `multi_survivor_grid(scenario, rows, cols,
+seed, k) -> TrueGrid`: the core `mapgen.generate` map plus `k − 1` extra survivors placed (own
+seeded stream) on free cells reachable on the true map, pairwise Manhattan ≥
+`EXT_MIN_SURVIVOR_SPACING`, never on the start; deterministic in the arguments.
+
+**`ext/agents.py`.** `SearchAgent(transition, planner="andor" | "astar", planner_config,
+agent_config)`; names `search_andor` and `search_astar`.
+- Knows `n_survivors` (a radio count) but, when `survivors_known=False`, not where they are.
+- Target selection, re-evaluated **only** after a rescue, when the current target stops being a
+  valid target, or when a new survivor is seen: if a known unrescued survivor exists, the
+  nearest one by BFS distance on the agent's optimistic passability (greedy order, ties
+  row-major); otherwise the nearest **frontier** cell (a passable known cell with an UNKNOWN
+  4-neighbour; ties row-major); if neither exists → `Abort("unreachable", …)`.
+- `search_andor` plans with `AndOrPlanner` on `ProblemModel(passable, goal=target,
+  transition)` and follows the policy; `search_astar` plans an A\* path and replans on
+  deviation (like `astar_replan`). Both replan on contradictions (eager/lazy as in the core),
+  on a target change and on an unplanned state (D10). `mode` is `"explore"` or `"rescue"`.
+- Works with a `BeliefMap` (noise-free) or a `ProbBelief` (noisy).
+
+**`ext/mission.py`.** `ExtMission(grid, agent, world_config=None, seed=0, *, survivors_known=
+True, false_negative=0.0, prior_debris=EXT_PRIOR_DEBRIS, threshold=EXT_DEBRIS_THRESHOLD)`:
+World for motion and aftershocks; sensing = `World.sense()` → `NoisySensor` (always, so draws
+align) → the agent's belief; a bump's touched cell is exempt from noise. When the robot stands
+on an unrescued survivor it is rescued (event + `agent.on_rescue(pos)`). `ValueError` if
+`prior_debris ≥ threshold` (frontier search would be incomplete) or if `prob_belief=False` is
+combined with `false_negative > 0` (a `BeliefMap` would un-see known debris, outside the
+`SearchAgent` termination argument). Ends RESCUED when all
+`k` are rescued, BUDGET after `world_config.step_budget(rows, cols) * k` steps, or on an Abort.
+`ExtStepEvent` (frozen): t, pos, action, outcome, new_pos, blocked, bump, contradictions,
+replanned, unplanned, target, mode, rescued_now, found_now, status. `ExtMetrics` (frozen):
+agent, mode label, scenario, seed, rows, cols, slip_p, k, survivors_known, false_negative,
+success, failure_reason, steps, rescued, first_detection_step, cells_explored, replans, slips,
+skids, bumps, unplanned_states, planning_ms, nodes_expanded, oracle_path (shortest true-map
+path start→survivor, k = 1), greedy_tour, optimal_tour (true-map BFS tour lengths of the
+greedy-nearest order and of the best order by brute force over all orders, k ≤
+`EXT_MAX_BRUTE_FORCE_K`; NaN otherwise).
+
+**`ext/experiments.py` + `ext/demo.py`.** `python -m rescue.ext.demo --mode search|multi|noisy`
+prints one mission's trace and metrics. `python -m rescue.ext.experiments [--quick]` runs three
+blocks with the core harness's seeding (task seed from (base_seed, scenario, size, replicate),
+so known vs unknown location, every k and every noise level replay the same base map,
+outcome stream and per-(t, cell) noise draws) and writes `results/ext/raw.csv`, `summary.csv`, `EXTENSIONS.md` (claims with
+the same CI machinery as `experiments/stats.py`) and `plots/*.png`:
+- `search` (§8.4): survivor location known vs unknown, `search_andor` vs `search_astar`;
+- `multi` (§8.5): k ∈ {1, 2, 3, 4} known survivors; greedy vs optimal tour; steps per rescue;
+- `noisy` (§8.3): false-negative rate ∈ {0, 0.05, 0.1, 0.2}; collisions, unplanned states,
+  success, steps.
+
+**Extension harness (`ext/experiments.py`, `ext/claims.py`, `ext/plots.py`).**
+```python
+# experiments/ext.yaml: name, base_seed, n_maps, agents, workers, blocks (search / multi / noisy)
+ExtBlock(name, scenarios, sizes, slip_p, survivors_known=(True,), k=(1,), false_negative=(0.0,),
+         agents=None, n_maps=None)          # unknown keys / bad values -> ValueError
+expand_tasks(cfg) -> list[ExtTask]          # block, scenario, size, p, k, known, eps, replicate;
+    # seed = experiments.spec.task_seed(base_seed, scenario, rows, cols, replicate): map seed
+    # (multi_survivor_grid), World seed and NoisySensor seed
+run_ext_experiments(cfg, out_dir, workers=None, progress=True, *, max_tasks=None) -> raw.csv
+    # max_tasks: subsample_maps — an evenly spaced sample of WHOLE maps (every condition of a
+    # sampled map, so the paired claims stay paired), at most max_tasks tasks, >= 1 map
+    # spawn Pool + BLAS caps (as experiments.run); rows sorted by task then agent;
+    # check_complete row-loss guard; identical across worker counts except planning_ms/elapsed_ms
+read_raw / write_summary (per condition × agent, plus scenario = 'all' pooled rows)
+claims.write_extensions(rows, path) -> EXTENSIONS.md      # X1–X5, rules printed per claim
+plots.make_ext_plots(rows, out_dir) -> search_steps.png, multi_tours.png, noisy.png
+    # search_steps: successful steps averaged per map first (map = unit of the CI); tours: one
+    # value per survivor layout (EXT_LAYOUT_KEYS = EXT_MAP_KEYS + k), also in X3
+```
+`raw.csv` columns: experiment, scenario, rows, cols, slip_p, k, survivors_known, false_negative,
+replicate, seed, agent, success, failure_reason, steps, rescued, first_detection_step,
+cells_explored, replans, slips, skids, bumps, blocked_moves, unplanned_states, planning_ms,
+nodes_expanded, oracle_path, greedy_tour, optimal_tour, plans_made, elapsed_ms. Full config: size
+15, 200 maps (multi: 100, `search_andor` only), search p ∈ {0.1, 0.3}, multi / noisy p = 0.2;
+quick config: same factors, 10×10, 10 maps (< 60 s). Claims (thresholds `EXT_CLAIM_*` in
+`config.py`, fixed before the full run): **X1** `search_andor` with an unknown location succeeds
+in ≥ 95 % (H1's rule); **X2** unknown − known steps, paired, map as the unit (✅ CI > 0, ❌ CI <
+0) plus the ratio of mean steps; **X3** mean greedy / optimal tour ratio per k (✅ every CI upper
+bound ≤ 1.10, ❌ some CI lower bound > 1.10, ⚠️ otherwise, including a k with < 2 maps); **X4**
+bumps occur at ε > 0 and never at ε = 0 (a bump at ε = 0 is ❌: it breaks the core invariant),
+and success at ε = 0.1 ≥ 95 %; **X5** non-inferiority: paired `search_andor − search_astar`
+bumps at ε > 0, map as the unit, pooled over ε and at every ε (❌ any CI > 0, ✅ every CI upper
+bound ≤ the absolute margin 0.1 bumps per mission, rationale in `config.py`).
 
 ---
 

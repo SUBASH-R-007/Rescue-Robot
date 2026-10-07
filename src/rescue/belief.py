@@ -24,19 +24,24 @@ class BeliefMap:
     """Per-cell knowledge as an ``int8`` array of :class:`Cell` values.
 
     Starts all ``UNKNOWN`` except the (known) survivor cell. Planning is optimistic:
-    :meth:`passable_mask` treats ``UNKNOWN`` as passable.
+    :meth:`passable_mask` treats ``UNKNOWN`` as passable. ``survivor=None`` (search extension,
+    plan §3.14) starts with every cell ``UNKNOWN``; survivors then become known only through
+    observations (:meth:`survivors_seen`).
     """
 
-    def __init__(self, rows: int, cols: int, survivor: Pos) -> None:
+    def __init__(self, rows: int, cols: int, survivor: Pos | None) -> None:
         if rows <= 0 or cols <= 0:
             raise ValueError(f"grid must be non-empty, got {rows}x{cols}")
-        if not in_bounds(survivor, rows, cols):
+        if survivor is not None and not in_bounds(survivor, rows, cols):
             raise ValueError(f"survivor {survivor} is outside the {rows}x{cols} grid")
         self.rows: int = rows
         self.cols: int = cols
-        self.survivor: Pos = (int(survivor[0]), int(survivor[1]))
+        self.survivor: Pos | None = (
+            None if survivor is None else (int(survivor[0]), int(survivor[1]))
+        )
         self.grid: np.ndarray = np.zeros((rows, cols), dtype=np.int8)
-        self.grid[self.survivor] = Cell.SURVIVOR
+        if self.survivor is not None:
+            self.grid[self.survivor] = Cell.SURVIVOR
 
     def _check(self, p: Pos) -> None:
         if not in_bounds(p, self.rows, self.cols):
@@ -90,6 +95,11 @@ class BeliefMap:
     def explored_count(self) -> int:
         """Number of non-``UNKNOWN`` cells (the survivor cell counts from the start)."""
         return int(np.count_nonzero(self.grid != Cell.UNKNOWN))
+
+    def survivors_seen(self) -> tuple[Pos, ...]:
+        """Cells currently believed ``SURVIVOR``, in row-major order (plan §3.14)."""
+        found = np.argwhere(self.grid == Cell.SURVIVOR)
+        return tuple((int(r), int(c)) for r, c in found)
 
     def copy(self) -> BeliefMap:
         """Independent deep copy."""

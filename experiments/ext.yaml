@@ -1,0 +1,36 @@
+# Extension experiments (docs/plan.md §3.14, brief §8.3–§8.5):
+#   python -m rescue.ext.experiments            # this file → results/ext/ (committed)
+# Task seeds depend only on (base_seed, scenario, size, replicate), as in the core harness, so
+# known vs unknown location, every k, every noise level and both agents replay the same base
+# map, outcome stream and noise draws. Claims X1–X5 → results/ext/EXTENSIONS.md.
+name: ext
+base_seed: 2026
+n_maps: 200
+agents: [search_andor, search_astar]
+workers: null          # null = CPUs - 2
+
+blocks:
+  # §8.4: survivor location known vs unknown (frontier exploration).
+  - name: search
+    scenarios: [random_rubble, collapsed_building, flooded_zone, maze_corridors]
+    sizes: [15]
+    slip_p: [0.1, 0.3]
+    survivors_known: [true, false]
+
+  # §8.5: k known survivors, greedy nearest-first order vs the optimal tour.
+  - name: multi
+    scenarios: [random_rubble, collapsed_building, flooded_zone, maze_corridors]
+    sizes: [15]
+    slip_p: [0.2]
+    k: [1, 2, 3, 4]
+    survivors_known: [true]
+    agents: [search_andor]
+    n_maps: 100
+
+  # §8.3: debris false-negative rate eps (known survivor location).
+  - name: noisy
+    scenarios: [random_rubble, collapsed_building, flooded_zone, maze_corridors]
+    sizes: [15]
+    slip_p: [0.2]
+    survivors_known: [true]
+    false_negative: [0.0, 0.05, 0.1, 0.2]

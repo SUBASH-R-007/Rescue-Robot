@@ -7,7 +7,9 @@ ASCII map format (one character per cell):
 
 * ``.`` open, ``#`` debris, ``S`` start (open), ``P`` survivor, ``~`` open + high slip.
 * Lines are stripped; blank lines and lines starting with ``;`` are ignored (comments).
-* All rows have equal length; exactly one ``S`` and one ``P``.
+* All rows have equal length; exactly one ``S`` and one ``P`` (``multi=True`` accepts one or
+  more ``P``: the first in row-major order is the primary survivor, the rest are extras;
+  plan §3.14).
 """
 
 from __future__ import annotations
@@ -82,10 +84,12 @@ class TrueGrid:
 
     ``cells`` is an ``int8`` array holding ``OPEN`` / ``DEBRIS`` / ``SURVIVOR`` (never
     ``UNKNOWN``); ``high_slip`` is a separate bool mask of high-slip terrain (D2).
-    Invariants (``ValueError`` otherwise): ``start`` is ``OPEN``, ``survivor`` is the only
-    ``SURVIVOR`` cell, the two differ, neither is marked high-slip, and no ``DEBRIS`` cell is
-    marked high-slip (so every valid grid round-trips through ASCII exactly). The grid owns
-    private copies of the arrays it is given.
+    Invariants (``ValueError`` otherwise): ``start`` is ``OPEN``, the ``SURVIVOR`` cells are
+    exactly :attr:`survivors` (``survivor`` plus the optional ``extra_survivors`` of the
+    multi-survivor extension, plan §3.14: distinct, in bounds, never the start), neither the
+    start nor any survivor is marked high-slip, and no ``DEBRIS`` cell is marked high-slip (so
+    every valid grid round-trips through ASCII exactly). The grid owns private copies of the
+    arrays it is given.
     """
 
     cells: np.ndarray
@@ -93,6 +97,8 @@ class TrueGrid:
     survivor: Pos
     high_slip: np.ndarray
     name: str = ""
+    #: Further survivors (multi-survivor extension, plan §3.14); empty for core maps.
+    extra_survivors: tuple[Pos, ...] = ()
 
     def __post_init__(self) -> None:
         raw_cells = np.asarray(self.cells)
@@ -106,6 +112,7 @@ class TrueGrid:
         self.high_slip = np.array(self.high_slip, dtype=bool)
         self.start = (int(self.start[0]), int(self.start[1]))
         self.survivor = (int(self.survivor[0]), int(self.survivor[1]))
+        self.extra_survivors = tuple((int(q[0]), int(q[1])) for q in self.extra_survivors)
         if self.high_slip.shape != self.cells.shape:
             raise ValueError(
                 f"high_slip shape {self.high_slip.shape} != cells shape {self.cells.shape}"
@@ -113,17 +120,34 @@ class TrueGrid:
         for label, p in (("start", self.start), ("survivor", self.survivor)):
             if not self.in_bounds(p):
                 raise ValueError(f"{label} {p} is outside the {self.rows}x{self.cols} grid")
+        for p in self.extra_survivors:
+            if not self.in_bounds(p):
+                raise ValueError(
+                    f"extra survivor {p} is outside the {self.rows}x{self.cols} grid"
+                )
         if self.start == self.survivor:
             raise ValueError("start and survivor must differ")
+        if self.start in self.extra_survivors:
+            raise ValueError(f"extra survivor {fmt_pos(self.start)} cannot be the start")
+        if len(set(self.survivors)) != len(self.survivors):
+            raise ValueError("survivor positions must be distinct")
         if self.cells[self.start] != Cell.OPEN:
             raise ValueError(f"start {fmt_pos(self.start)} must be an OPEN cell")
         if self.cells[self.survivor] != Cell.SURVIVOR:
             raise ValueError(f"survivor {fmt_pos(self.survivor)} must be a SURVIVOR cell")
-        if int(np.count_nonzero(self.cells == Cell.SURVIVOR)) != 1:
-            raise ValueError("the grid must contain exactly one SURVIVOR cell")
+        for p in self.extra_survivors:
+            if self.cells[p] != Cell.SURVIVOR:
+                raise ValueError(f"extra survivor {fmt_pos(p)} must be a SURVIVOR cell")
+        if int(np.count_nonzero(self.cells == Cell.SURVIVOR)) != len(self.survivors):
+            if not self.extra_survivors:
+                raise ValueError("the grid must contain exactly one SURVIVOR cell")
+            raise ValueError(
+                f"the grid must contain exactly {len(self.survivors)} SURVIVOR cells "
+                "(survivor + extra_survivors)"
+            )
         # The ASCII format writes these cells as 'S' / 'P', which cannot carry the '~' flag;
         # rejecting it keeps from_ascii(to_ascii(g)) exact for every valid grid.
-        for label, p in (("start", self.start), ("survivor", self.survivor)):
+        for label, p in (("start", self.start), *(("survivor", q) for q in self.survivors)):
             if self.high_slip[p]:
                 raise ValueError(f"{label} {fmt_pos(p)} cannot be high-slip terrain")
         # Debris is written as '#', which cannot carry the '~' flag either.
@@ -148,6 +172,11 @@ class TrueGrid:
         """``(rows, cols)``."""
         return (self.rows, self.cols)
 
+    @property
+    def survivors(self) -> tuple[Pos, ...]:
+        """Every survivor cell: ``(survivor, *extra_survivors)`` (plan §3.14)."""
+        return (self.survivor, *self.extra_survivors)
+
     # --- queries ---------------------------------------------------------------------------
     def in_bounds(self, p: Pos) -> bool:
         """True if ``p`` lies on this grid."""
@@ -169,6 +198,7 @@ class TrueGrid:
             survivor=self.survivor,
             high_slip=self.high_slip.copy(),
             name=self.name,
+            extra_survivors=self.extra_survivors,
         )
 
     def __eq__(self, other: object) -> bool:
@@ -177,6 +207,7 @@ class TrueGrid:
         return (
             self.start == other.start
             and self.survivor == other.survivor
+            and self.extra_survivors == other.extra_survivors
             and self.name == other.name
             and np.array_equal(self.cells, other.cells)
             and np.array_equal(self.high_slip, other.high_slip)
@@ -190,12 +221,12 @@ class TrueGrid:
 
         Clears any high-slip flag on ``p`` (debris is not terrain, and keeping the flag would
         break the ASCII round trip). Raises ``ValueError`` if ``p`` is off-grid, the start or
-        the survivor cell. Other constraints (robot cell, connectivity) are the world's
+        any survivor cell. Other constraints (robot cell, connectivity) are the world's
         responsibility.
         """
         if not self.in_bounds(p):
             raise ValueError(f"cannot add debris off-grid at {p}")
-        if p in (self.start, self.survivor):
+        if p == self.start or p in self.survivors:
             raise ValueError(f"cannot add debris on the start/survivor cell {fmt_pos(p)}")
         self.cells[p] = Cell.DEBRIS
         self.high_slip[p] = False
@@ -204,8 +235,9 @@ class TrueGrid:
     def to_ascii(self) -> str:
         """Render the map in the ASCII format (one line per row, trailing newline).
 
-        The start and survivor are written as ``S`` / ``P`` (a valid grid never marks them
-        high-slip), so ``from_ascii(to_ascii(g))`` round-trips exactly.
+        The start and every survivor are written as ``S`` / ``P`` (a valid grid never marks
+        them high-slip), so ``from_ascii(to_ascii(g))`` round-trips exactly (pass
+        ``multi=True`` when the grid has extra survivors).
         """
         lines: list[str] = []
         for r in range(self.rows):
@@ -231,11 +263,14 @@ class TrueGrid:
         Path(path).write_text(self.to_ascii(), encoding="utf-8", newline="\n")
 
     @classmethod
-    def from_ascii(cls, text: str, name: str = "") -> TrueGrid:
+    def from_ascii(cls, text: str, name: str = "", *, multi: bool = False) -> TrueGrid:
         """Parse an ASCII map; errors raise ``ValueError`` with 1-indexed line/column.
 
         Line numbers count every source line (including comments and blank lines); columns
         count characters from the start of the source line (including leading whitespace).
+        With ``multi=False`` (the default) the map needs exactly one ``P``; with ``multi=True``
+        at least one: the first in row-major order becomes ``survivor`` and the rest
+        ``extra_survivors`` (plan §3.14).
         """
         rows_chars: list[str] = []
         cells_rows: list[list[int]] = []
@@ -283,8 +318,12 @@ class TrueGrid:
             slip_rows.append(row_slip)
         if not rows_chars:
             raise ValueError("map contains no rows")
-        for label, ch, found in (("start", _CH_START, starts), ("survivor", _CH_SURVIVOR,
-                                                                  survivors)):
+        checks: list[tuple[str, str, list[tuple[Pos, int]]]] = [("start", _CH_START, starts)]
+        if not multi:
+            checks.append(("survivor", _CH_SURVIVOR, survivors))
+        elif not survivors:
+            raise ValueError(f"map needs at least one survivor {_CH_SURVIVOR!r} (none found)")
+        for label, ch, found in checks:
             if len(found) != 1:
                 where = ", ".join(f"line {ln}" for _, ln in found) or "none found"
                 raise ValueError(f"map needs exactly one {label} {ch!r} ({where})")
@@ -294,10 +333,14 @@ class TrueGrid:
             survivor=survivors[0][0],
             high_slip=np.array(slip_rows, dtype=bool),
             name=name,
+            extra_survivors=tuple(p for p, _ in survivors[1:]),
         )
 
     @classmethod
-    def load(cls, path: str | Path) -> TrueGrid:
-        """Load an ASCII map file; the grid is named after the file stem."""
+    def load(cls, path: str | Path, *, multi: bool = False) -> TrueGrid:
+        """Load an ASCII map file; the grid is named after the file stem.
+
+        ``multi`` is passed to :meth:`from_ascii` (``True`` accepts several ``P``).
+        """
         p = Path(path)
-        return cls.from_ascii(p.read_text(encoding="utf-8"), name=p.stem)
+        return cls.from_ascii(p.read_text(encoding="utf-8"), name=p.stem, multi=multi)

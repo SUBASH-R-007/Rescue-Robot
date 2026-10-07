@@ -314,3 +314,54 @@ COMPARE_MAX_PANE_ROWS: int = 2
 #: and about a sixth of H3's full-run gap. A CI that contains 0 but is wider than the margin is
 #: ⚠️ inconclusive, as for every other paired claim.
 EQUIVALENCE_MARGIN_MOVES: float = 0.5
+
+# --- Extensions (rescue.ext, docs/plan.md §3.14, brief §8.3–§8.5) ----------------------------
+#: Second entropy word of the noisy sensor's stream: ``SeedSequence([seed, KEY])`` is
+#: independent of the World's spawned streams and of the map generators' stream.
+NOISE_STREAM_KEY: int = 0x6E6F_6973  # "nois"
+#: Second entropy word of the extra-survivor placement stream of ``multi_survivor_grid``.
+EXT_SCENARIO_STREAM_KEY: int = 0x6D75_6C74  # "mult"
+#: Prior probability that a never-observed cell is debris (``ProbBelief``). It is the default
+#: ``random_rubble`` density (``DEFAULT_RUBBLE_DENSITY``): the one scenario whose debris is
+#: i.i.d., so the prior matches the base rate the robot would expect on unseen rubble. Being
+#: below ``EXT_DEBRIS_THRESHOLD`` it keeps unknown cells passable (optimistic, like the core
+#: belief's "UNKNOWN assumed open"), so with ``false_negative = 0`` a ``ProbBelief`` makes the
+#: same passability decisions as a ``BeliefMap``.
+EXT_PRIOR_DEBRIS: float = DEFAULT_RUBBLE_DENSITY
+#: A cell is treated as debris (impassable) once its debris probability reaches this value.
+EXT_DEBRIS_THRESHOLD: float = 0.5
+#: Smallest pairwise Manhattan distance between survivors placed by ``multi_survivor_grid``
+#: (relaxed one step at a time, down to 1, only when no free cell satisfies it).
+EXT_MIN_SURVIVOR_SPACING: int = 3
+#: The optimal tour (best visiting order) is brute-forced over all k! orders up to this k;
+#: above it ``ExtMetrics.optimal_tour`` is NaN (6! = 720 orders).
+EXT_MAX_BRUTE_FORCE_K: int = 6
+#: Defaults of ``python -m rescue.ext.demo`` (map scenario, size, world / map seed).
+EXT_DEMO_SCENARIO: str = "collapsed_building"
+EXT_DEMO_SIZE: tuple[int, int] = (12, 12)
+EXT_DEMO_SEED: int = 7
+#: Survivors of the demo's ``multi`` mode, and false-negative rate of its ``noisy`` mode.
+EXT_DEMO_MULTI_K: int = 3
+EXT_DEMO_NOISE: float = 0.1
+#: Longest execution trace the demo prints (segments, final position included).
+EXT_DEMO_TRACE_SEGMENTS: int = 40
+#: Claims of ``python -m rescue.ext.experiments`` (``results/ext/EXTENSIONS.md``), fixed before
+#: the full run and never tuned toward a verdict.
+#: X1 / X4: success-rate target (unknown-location search; noisy sensing at ``EXT_CLAIM_NOISE``).
+EXT_CLAIM_SUCCESS_TARGET: float = 0.95
+#: X3: the greedy nearest-first tour may be at most this many times the optimal tour.
+EXT_CLAIM_TOUR_RATIO_MAX: float = 1.10
+#: X4: false-negative rate at which the success target is checked.
+EXT_CLAIM_NOISE: float = 0.1
+#: X5: non-inferiority margin (bumps per mission): ``search_andor`` counts as "not worse" than
+#: ``search_astar`` under noise when the CI upper bound of their paired difference is at most
+#: this, pooled over ε and at every ε (and is refuted when a CI lies above 0).
+#: Why 0.1, and why absolute: it allows at most one extra collision per ten missions, a
+#: difference too small to matter for a rescue. A relative margin (a fraction of
+#: ``search_astar``'s rate) was rejected because that rate is itself estimated from the same
+#: runs (the threshold would move with the data) and is near 0 at small ε. For scale, the
+#: 10×10 quick run measured ``search_astar`` at about 0.35 / 0.70 / 1.07 bumps per mission at
+#: ε = 0.05 / 0.1 / 0.2, so 0.1 is roughly 30 % / 15 % / 10 % of that baseline: lenient at the
+#: lowest noise level, strict at the highest. The value was set with the claim, before the
+#: full run, and must not be changed after seeing its results.
+EXT_CLAIM_BUMP_MARGIN: float = 0.1

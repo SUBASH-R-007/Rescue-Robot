@@ -1,0 +1,34 @@
+# Quick smoke run of the extension experiments (< 60 s incl. plots):
+#   python -m rescue.ext.experiments --quick    # this file → results/ext/quick/ (git-ignored)
+# Same blocks and factors as ext.yaml with 10 maps per condition and 10x10 maps.
+name: ext_quick
+base_seed: 2026
+n_maps: 10
+agents: [search_andor, search_astar]
+workers: null          # null = CPUs - 2
+
+blocks:
+  # §8.4: survivor location known vs unknown (frontier exploration).
+  - name: search
+    scenarios: [random_rubble, collapsed_building, flooded_zone, maze_corridors]
+    sizes: [10]
+    slip_p: [0.1, 0.3]
+    survivors_known: [true, false]
+
+  # §8.5: k known survivors, greedy nearest-first order vs the optimal tour.
+  - name: multi
+    scenarios: [random_rubble, collapsed_building, flooded_zone, maze_corridors]
+    sizes: [10]
+    slip_p: [0.2]
+    k: [1, 2, 3, 4]
+    survivors_known: [true]
+    agents: [search_andor]
+    n_maps: 10
+
+  # §8.3: debris false-negative rate eps (known survivor location).
+  - name: noisy
+    scenarios: [random_rubble, collapsed_building, flooded_zone, maze_corridors]
+    sizes: [10]
+    slip_p: [0.2]
+    survivors_known: [true]
+    false_negative: [0.0, 0.05, 0.1, 0.2]

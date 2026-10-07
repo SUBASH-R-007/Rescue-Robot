@@ -182,9 +182,9 @@ class Agent(ABC):
         """Start a new mission at ``start``; ``belief`` is used (and updated) in place."""
         goal = (int(goal[0]), int(goal[1]))
         if goal != belief.survivor:
+            known = "none" if belief.survivor is None else fmt_pos(belief.survivor)
             raise ValueError(
-                f"goal {fmt_pos(goal)} differs from the belief's survivor "
-                f"{fmt_pos(belief.survivor)}"
+                f"goal {fmt_pos(goal)} differs from the belief's survivor {known}"
             )
         self.belief = belief
         self.pos = (int(start[0]), int(start[1]))
