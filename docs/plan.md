@@ -18,7 +18,7 @@ everything shown to a user (traces, CLI, UI, plan pretty-print) is 1-indexed via
 As built (Phase 7); git-ignored outputs are marked *(ignored)*.
 
 ```
-pyproject.toml           package + extras [dev] / [video] (imageio-ffmpeg), console scripts
+pyproject.toml           package + extras [dev] / [video] (imageio-ffmpeg) / [web] (pygbag), console scripts
                          rescue-{demo,sim,compare,replay,experiments}, ruff / pytest / coverage
 README.md LICENSE CLAUDE.md .pre-commit-config.yaml .gitignore
 src/rescue/
@@ -63,6 +63,10 @@ src/rescue/
   ext/  __init__.py sensing.py scenarios.py agents.py mission.py demo.py experiments.py
         claims.py plots.py   optional extensions, brief §8.3–§8.5                      (§3.14)
 scripts/make_figures.py  regenerates the simulator figures in docs/figures/ headless (§3.11)
+scripts/build_web.py     stages build/web_app/ (main.py, rescue/ without experiments/ ext/, maps,
+                         DejaVu fonts + licence) and runs pygbag --build (brief §6.7, docs/web.md)
+web/main.py              pygbag entry point: asyncio.run(main()) → SimApp(...).run_async()
+build/                   web_app/ staging folder and pygbag output build/web/ *(ignored)*
 maps/   deck_demo.txt deck_figure.txt (the deck's maps) + mapgen samples rubble_01.txt
         building_01.txt flooded_01.txt maze_01.txt (each header = the command that regenerates it)
 experiments/ main.yaml (full run) quick.yaml (--quick) ext.yaml ext_quick.yaml (§3.14)
@@ -75,8 +79,10 @@ tests/  conftest.py helpers_maps.py helpers_phase2.py and test_{config,grid,mode
         plan,andor,validate,fixpoint,bfs,astar,properties,agents,runner,invariants,demo,runs,
         viz,mapgen,stress,stretch_agents,compare,experiments}.py (§5), plus
         test_coverage_error_paths.py (Phase 7: error paths and CLI branches run in-process),
-        test_ext.py test_ext_core_hooks.py test_ext_experiments.py (§3.14)
+        test_ext.py test_ext_core_hooks.py test_ext_experiments.py (§3.14),
+        test_web.py (browser build: run_async, fonts, staging; docs/web.md)
 docs/   brief.md (original specification) plan.md architecture.md algorithm.md results.md
+        web.md (browser demo)
         figures/ deck_demo.gif sim_deck_demo.png sim_deck_figure.png plan_tree_deck_demo.png
                  compare_collapsed_building.png
 ```
@@ -505,8 +511,13 @@ REPLAN_FLASH_MS; LOG_CAPACITY; SLIP_P_STEP = 0.05; HEADLESS_FRAMES; HEADLESS_FRA
 RECORD_FPS; RECORD_SCALE; RECORDINGS_DIR = "recordings"; GENERATED_MAP_SIZE; EXPORT_LAYOUT = "lr"
 @dataclass(frozen=True, eq=False) class Fonts: small; body; heading; title; mono; path; mono_path
     def sized(size, bold=False) -> pygame.font.Font      # same family at any size (cached)
-def load_fonts() -> Fonts      # first of FONT_FALLBACKS whose font has the label glyphs
-                               # (REQUIRED_GLYPHS "→↺…×"), then SysFont, then pygame's default
+def load_fonts() -> Fonts      # bundled_font_path(...) first, then the first of FONT_FALLBACKS
+                               # whose font has the label glyphs (REQUIRED_GLYPHS "→↺…×"), then
+                               # SysFont, then pygame's default
+def bundled_fonts_dir() -> Path | None   # $RESCUE_FONTS_DIR (FONTS_DIR_ENV), else fonts/ next to
+                               # the rescue package, if it holds BUNDLED_FONT_FILE; None in a
+                               # checkout (desktop unchanged). The web build ships DejaVu there.
+def bundled_font_path(filename, glyphs) -> str | None
 def grid_area(window_size) -> Rect; def panel_area(window_size) -> Rect
 def contrast_ratio(a, b) -> float   # WCAG 2; the palette tests check text >= 4.5:1
 def flash_alpha(elapsed_ms, duration_ms=REPLAN_FLASH_MS) -> float   # pulsing fade, 0..1
@@ -570,6 +581,8 @@ class Recorder: start(path, fps=RECORD_FPS, scale=RECORD_SCALE) -> Path; due(now
     # GIF via imageio; MP4 (.mp4 / .m4v / .mov) via imageio-ffmpeg, falling back to GIF with a
     # warning when it is not installed; any other suffix becomes .gif; fps, scale > 0
 def ffmpeg_available() -> bool
+def in_browser() -> bool; def recording_available() -> bool   # sys.platform == "emscripten":
+    # no recording in the pygbag build; BaseApp logs RECORDING_UNAVAILABLE_TEXT on G instead
 
 # export.py — matplotlib Agg canvas only (no pyplot state, no Graphviz)
 def export_plan_tree(plan | to_tree dict, path, max_depth=5, title=None,
@@ -582,6 +595,9 @@ def export_plan_text(plan | to_tree dict, max_depth=5) -> str    # indented "edg
 class BaseApp: window, fonts, GridView / TreeView / Panel / EventLog / Recorder, palette and
     speed, play / pause, help overlay, frame loop; tick(dt_ms) -> int (steps taken);
     render() -> Surface; frame(dt_ms); run() -> int; close(); save_screenshot(path) -> Path;
+    run_frame(clock) -> bool   # one loop iteration (headless frame, or tick + events + frame +
+                               # flip); False when the app should stop; shared by run() and
+    async run_async() -> int   # ... the asyncio loop (await asyncio.sleep(0) per frame, pygbag)
     handle_event(event); handle_key(key, mods=0) -> bool; toggle_recording() -> Path | None;
     recordings: list[Path]
 @dataclass(frozen=True) class SimOptions: map_path | None; scenario | None; rows; cols; seed;
@@ -1049,8 +1065,9 @@ itself accepts a prior `≥ threshold` (every unknown cell impassable); `ExtMiss
 
 **`ext/scenarios.py` (§8.5 multiple survivors).** `multi_survivor_grid(scenario, rows, cols,
 seed, k) -> TrueGrid`: the core `mapgen.generate` map plus `k − 1` extra survivors placed (own
-seeded stream) on free cells reachable on the true map, pairwise Manhattan ≥
-`EXT_MIN_SURVIVOR_SPACING`, never on the start; deterministic in the arguments.
+seeded stream) on `OPEN`, non-high-slip cells reachable on the true map, pairwise Manhattan ≥
+`EXT_MIN_SURVIVOR_SPACING` (relaxed one step at a time, down to 1, if no cell qualifies), never
+on the start; deterministic in the arguments.
 
 **`ext/agents.py`.** `SearchAgent(transition, planner="andor" | "astar", planner_config,
 agent_config)`; names `search_andor` and `search_astar`.

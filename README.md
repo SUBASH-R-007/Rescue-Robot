@@ -27,6 +27,7 @@ Chennai. **Team:** Srithan Saravanan (240701532), Subash R (240701538).
 - [Commands](#commands)
 - [Screenshots](#screenshots)
 - [Results](#results)
+- [Extensions (brief §8)](#extensions-brief-8)
 - [How the algorithm works](#how-the-algorithm-works)
 - [Repository layout](#repository-layout)
 - [Testing](#testing)
@@ -124,7 +125,8 @@ python -m rescue.demo
 ```
 
 **Optional extras.** `pip install -e ".[dev,video]"` adds `imageio-ffmpeg` for MP4 recording
-(GIF recording works without it).
+(GIF recording works without it); `".[web]"` adds `pygbag` for the browser demo
+([`docs/web.md`](docs/web.md)).
 
 **Tip for synced folders.** If the repository lives in OneDrive, Dropbox or similar, create the
 virtual environment *outside* the synced folder (for example `~/.venvs/rescue-robot`) so the
@@ -290,6 +292,21 @@ plan-tree PNG) headlessly and deterministically. The comparison screenshot comes
 compare CLI; its "Plan ms" column is wall-clock time, so it differs slightly between runs. The
 experiment plots in `results/plots/` come from `rescue.experiments`.
 
+### Browser demo (pygbag)
+
+```bash
+pip install -e ".[web]"                 # pygbag
+python scripts/build_web.py             # → build/web_app/build/web/ (index.html, web_app.apk)
+python -m http.server 8765 --bind 127.0.0.1 --directory build/web_app/build/web
+```
+
+Open http://127.0.0.1:8765 (not `localhost`, see [`docs/web.md`](docs/web.md)) and click the
+page if asked. The simulator opens deck_demo with the demo seed, paused, and the keyboard
+controls work, except that recording (`G`) is unavailable and `Esc` does not quit (it only
+closes the help overlay). On first load the page downloads
+the WebAssembly Python runtime and the numpy / pygame-ce wheels from the pygbag CDN.
+[`docs/web.md`](docs/web.md) covers the build, publishing on GitHub Pages and the limitations.
+
 ### Running without a display
 
 The `--headless` flags select SDL's dummy drivers themselves. For anything else that imports
@@ -368,6 +385,49 @@ The full write-up, with every plot, the statistical methods and the threats to v
 
 ---
 
+## Extensions (brief §8)
+
+Three of the optional extensions in [`docs/brief.md`](docs/brief.md) §8 are built in
+`src/rescue/ext/`, on top of the core and without changing it. Brief §8 is one list of five
+items; §8.1–§8.5 below number them in order. With default arguments the core
+behaves bit-identically ("rule zero", [`docs/plan.md`](docs/plan.md) §3.14).
+
+- **Unknown survivor location (§8.4).** The robot knows only how many survivors there are. It
+  explores by driving to the nearest **frontier** cell (a known, passable cell next to unknown
+  ones) until it senses a survivor, then rescues it.
+- **Multiple survivors (§8.5).** The robot visits survivors in **greedy nearest-first** order
+  and re-evaluates the order after each rescue. The order is compared with the brute-force
+  optimal tour.
+- **Noisy sensing (§8.3).** The sensor misses debris with probability ε (false negatives only),
+  and the robot keeps a **Bayesian per-cell debris probability**. Collisions become possible.
+
+Each extension runs with an AND-OR planner (`search_andor`) or with A\* + replan
+(`search_astar`):
+
+```bash
+python -m rescue.ext.demo --mode search     # one mission, printed; also --mode multi, --mode noisy
+python -m rescue.ext.experiments --quick    # smoke run (10×10), writes results/ext/quick/ (not committed)
+python -m rescue.ext.experiments            # full run (experiments/ext.yaml), writes results/ext/
+```
+
+The full run ([`experiments/ext.yaml`](experiments/ext.yaml), 14,400 missions on 15×15 maps)
+checks five claims, all **supported** ([`results/ext/EXTENSIONS.md`](results/ext/EXTENSIONS.md)):
+
+| # | Claim | Headline number |
+|---|---|---|
+| X1 | frontier search rescues an unknown survivor in ≥ 95 % of missions | 100.0% [99.8%, 100.0%] (1600/1600), Σ bumps = 0 |
+| X2 | an unknown location costs extra steps | +76.27 steps [+71.61, +80.93] for `search_andor`, ×2.89 mean steps |
+| X3 | the greedy order is within 10 % of the optimal tour | k = 4: ×1.027 [1.022, 1.033] |
+| X4 | noise makes collisions possible, success stays ≥ 95 % at ε = 0.1 | 2719 bumps in 2400 runs at ε > 0; 100.0% [99.5%, 100.0%] (800/800) at ε = 0.1 |
+| X5 | AND-OR has at most 0.1 more collisions per mission than A\* + replan | −0.04 bumps per mission [−0.11, +0.03] |
+
+One caveat: in unknown-location search the two agents take the same number of steps in almost
+every paired mission, because following the frontier dominates, yet AND-OR still costs far more
+planning time. The write-up, with the algorithms, the termination argument, plots and
+limitations, is [`docs/extensions.md`](docs/extensions.md).
+
+---
+
 ## How the algorithm works
 
 1. During a planning call the belief map is frozen, so a planning state is just the robot's
@@ -414,19 +474,26 @@ Rescue-Robot/
 │   ├── mapgen.py           scenario generators and their CLI
 │   ├── demo.py, sim.py, compare.py, replay.py, cli_utils.py   command-line entry points
 │   ├── viz/                Pygame UI: renders StepEvents, contains no planning logic
-│   └── experiments/        Monte Carlo harness: run, stats, hypotheses, plots
+│   ├── experiments/        Monte Carlo harness: run, stats, hypotheses, plots
+│   └── ext/                extensions (brief §8.3–§8.5): noisy sensing, search agents,
+│                           multi-survivor maps, ext demo and experiment harness
 ├── tests/                  unit, property, invariant, statistical and headless UI tests
 ├── maps/                   deck_demo, deck_figure and sample generated maps (ASCII)
-├── experiments/            main.yaml (full run), quick.yaml (smoke run)
+├── experiments/            main.yaml (full run), quick.yaml (smoke run), ext.yaml, ext_quick.yaml
 ├── results/                raw.csv, summary.csv, HYPOTHESES.md, run_meta.json, plots/
+│   └── ext/                extension run: raw.csv, summary.csv, EXTENSIONS.md, run_meta.json, plots/
 ├── docs/
 │   ├── brief.md            original project specification
 │   ├── plan.md             interface contract and design decisions
 │   ├── architecture.md     module map, data flow, determinism, extension points
 │   ├── algorithm.md        the planning algorithm and its correctness
 │   ├── results.md          results chapter
+│   ├── extensions.md       extensions chapter (brief §8.3–§8.5)
+│   ├── web.md              browser demo (pygbag): build, serve, publish, limitations
 │   └── figures/            GIF and screenshots
 ├── scripts/make_figures.py regenerates the simulator figures in docs/figures/
+├── scripts/build_web.py    stages build/web_app/ and builds the browser demo with pygbag
+├── web/main.py             browser entry point (asyncio loop of the simulator)
 ├── CLAUDE.md               contributor conventions and commands
 ├── pyproject.toml          package metadata, dependencies, pytest / ruff / coverage settings
 └── LICENSE
@@ -518,9 +585,12 @@ From [`docs/results.md`](docs/results.md) §5 and the project scope:
   machine with 18 worker processes; ratios between agents are more reliable than absolute values.
 - **Statistics:** no multiplicity correction; several analyses are post hoc, and H7 was added
   after an earlier full run had shown H3's gap at p = 0.
-- **Not implemented:** noisy sensing, an unknown survivor location, multiple survivors, LAO\* or
-  terrain-aware AND-OR costs, maps larger than 30×30 in the experiments, and the optional
-  browser build with `pygbag`. The harness does not record AND-OR rollbacks.
+- **Not implemented:** LAO\* or terrain-aware AND-OR costs and maps larger than 30×30 in the
+  experiments. The harness does not record AND-OR rollbacks. The browser build cannot record,
+  offers only the map files with `M` (no scipy, so no generators), and has mouse offsets at
+  fractional device-pixel ratios ([`docs/web.md`](docs/web.md)). The extensions (unknown survivor location, multiple survivors, noisy sensing) have
+  their own limitations: false negatives only, no belief-space (POMDP) planning, a known survivor
+  count, and no simulator UI ([`docs/extensions.md`](docs/extensions.md) §7).
 
 ---
 

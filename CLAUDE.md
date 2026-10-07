@@ -7,11 +7,13 @@ A simulation suite (Pygame simulator, head-to-head comparison, scenarios, stress
 Monte Carlo harness) produces the report's results.
 
 **Source of truth:** `docs/plan.md` (file tree §1, decisions D1–D21 in §2, module contracts
-§3.1–§3.13: §3.11 viz, §3.12 scenarios / stretch agents / compare, §3.13 experiments). Read it
-before changing any public interface. If code and plan disagree, fix one of them in the same
-change. `docs/brief.md` is the original specification; `docs/architecture.md` the module
-map; `docs/algorithm.md` the algorithm and proofs; `docs/results.md` the measured results
-(its §1 lists where every number comes from: the committed `results/` run).
+§3.1–§3.14: §3.11 viz, §3.12 scenarios / stretch agents / compare, §3.13 experiments, §3.14
+optional extensions). Read it before changing any public interface. If code and plan disagree,
+fix one of them in the same change. `docs/brief.md` is the original specification;
+`docs/architecture.md` the module map; `docs/algorithm.md` the algorithm and proofs;
+`docs/results.md` the measured results (its §1 lists where every number comes from: the
+committed `results/` run); `docs/extensions.md` the extensions chapter (brief §8.3–§8.5,
+numbers from the committed `results/ext/` run).
 
 ## Commands
 
@@ -37,6 +39,9 @@ $PY -m rescue.experiments --quick             # < 60 s, writes results/quick/ (g
 $PY -m rescue.experiments --config experiments/main.yaml   # full run → results/ (committed)
 $PY scripts/make_figures.py                   # simulator figures → docs/figures/ (deterministic)
 $PY scripts/make_figures.py --only gif tree --out <dir>    # a subset, somewhere else
+$PY -m rescue.ext.demo --mode search          # extension demo: search | multi | noisy (brief §8)
+$PY -m rescue.ext.experiments --quick         # < 60 s, writes results/ext/quick/ (git-ignored)
+$PY -m rescue.ext.experiments                 # experiments/ext.yaml → results/ext/ (committed)
 ```
 
 Headless runs (CI, screenshots, smoke checks): `sim`, `compare` and `replay` take
@@ -100,3 +105,7 @@ elsewhere. `--max-tasks N --out DIR` runs an evenly spaced sample of the full co
 - Experiments: a task seed depends only on `(base_seed, scenario, size, replicate)`, so every
   agent, slip p, sensor radius, replan mode, aftershock q and `planner` override replays the
   same map and outcome stream; paired tests use the map as the unit (D21, plan §3.13).
+- Extensions (brief §8.3–§8.5, plan §3.14) live in `src/rescue/ext/`: no core module imports
+  them, and they use the core only through small backward-compatible hooks. **Rule zero:** with
+  default arguments the core stays bit-identical (`rescue.demo` output byte-identical, quick
+  `raw.csv` identical apart from the timing columns); never change core behaviour for an extension.

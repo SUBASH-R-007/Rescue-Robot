@@ -119,7 +119,7 @@ with a different planner and executor (§7.2).
 ### 2.1 Layers and the dependency rule
 
 Imports point one way: **grid → model / belief → world → planners → agents → runner →
-viz / experiments**. In the diagram an arrow `A → B` means "B may import A and anything
+viz / experiments → ext**. In the diagram an arrow `A → B` means "B may import A and anything
 below A". No module imports from a layer above its own.
 
 ```mermaid
@@ -133,6 +133,7 @@ flowchart BT
     AG["agents"]
     R["runner · runs"]
     FE["demo · experiments · viz<br/>CLI shims: sim · compare · replay"]
+    EX["ext (optional extensions, brief §8.3–§8.5)"]
     F --> D
     F --> P0
     D --> W
@@ -145,9 +146,10 @@ flowchart BT
     AG --> R
     R --> FE
     MG --> FE
+    FE --> EX
 ```
 
-Three details refine the one-line rule:
+Four details refine the one-line rule:
 
 * `world` and the planners do not import each other, with one exception. `world` uses the BFS
   primitive `planners.bfs.reachable` to check that an aftershock keeps the survivor
@@ -162,9 +164,13 @@ Three details refine the one-line rule:
   measured with `viz/` excluded (`pyproject.toml`). A check, run from the repository root:
 
   ```bash
-  python -c "import sys, rescue.demo, rescue.runs, rescue.mapgen, rescue.experiments.__main__, rescue.experiments.plots, rescue.sim, rescue.compare, rescue.replay; print([m for m in sys.modules if m.startswith('rescue.viz') or m == 'pygame'])"
+  python -c "import sys, rescue.demo, rescue.runs, rescue.mapgen, rescue.experiments.__main__, rescue.experiments.plots, rescue.sim, rescue.compare, rescue.replay, rescue.ext.demo, rescue.ext.experiments; print([m for m in sys.modules if m.startswith('rescue.viz') or m == 'pygame'])"
   # prints []
   ```
+* **`ext/` is a leaf.** It sits on top of the core: it imports `runner`, `agents.base`, the
+  planners, `world`, `belief`, `mapgen`, `demo` (`format_map`) and the experiment harness
+  (`experiments.spec`, `run`, `stats`, `hypotheses`, `plots`), but never `viz`. No core
+  module imports `ext` (`config.py` only holds its constants).
 
 The layer order was checked against every `import` in `src/rescue`, including the lazy
 imports inside functions and excluding the `TYPE_CHECKING` blocks. No import points upwards.
@@ -219,6 +225,28 @@ imports inside functions and excluding the `TYPE_CHECKING` blocks. No import poi
 | `viz/replay_app.py` | Scrubs through a saved run without re-simulating it. | `ReplayApp`, `load_replay` |
 | `viz/record.py` | GIF / MP4 recording. | `Recorder` |
 | `viz/export.py` | Plan tree as PNG (matplotlib) or text. | `export_plan_tree`, `export_plan_text` |
+
+**Extensions** (`ext/`, brief §8.3–§8.5, `docs/plan.md` §3.14; no pygame; covered by the
+coverage target):
+
+| Module | Responsibility | Key names |
+|---|---|---|
+| `ext/sensing.py` | False-negative debris sensor (one draw per grid cell per step) and the Bayes per-cell debris belief. | `NoisySensor`, `ProbBelief` |
+| `ext/scenarios.py` | Core scenario maps with k − 1 extra survivors. | `multi_survivor_grid`, `add_survivors` |
+| `ext/agents.py` | Frontier exploration and greedy nearest-first rescue order, planning with AND-OR or A\*. | `SearchAgent`, `SearchAndOrAgent`, `SearchAStarAgent`, `EXT_AGENTS`, `make_ext_agent`, `frontier_mask` |
+| `ext/mission.py` | The extension mission loop (several survivors, noisy percepts), events, metrics, oracle tours. | `ExtMission`, `run_ext_mission`, `ExtStepEvent`, `ExtMetrics`, `oracle_tours`, `format_ext_trace` |
+| `ext/demo.py` | `python -m rescue.ext.demo --mode search\|multi\|noisy`. | `main`, `MODES` |
+| `ext/experiments.py`, `ext/claims.py`, `ext/plots.py` | `python -m rescue.ext.experiments`: tasks, runs, summary, claims X1–X5 (`EXTENSIONS.md`), plots. | `ExtBlock`, `expand_tasks`, `run_ext_experiments`, `write_summary`, `evaluate_claims`, `write_extensions`, `make_ext_plots` |
+
+The extension package is the top layer. `ExtMission` mirrors `runner.Mission`: it drives the
+core `World` for motion, outcome draws and aftershocks, and passes every percept through a
+`NoisySensor`. The `SearchAgent` subclasses `agents.base.Agent` and reuses the core
+`AndOrPlanner` and `astar` with a moving goal. The harness reuses the core seeding
+(`experiments.spec.task_seed`), worker pool and statistics. The core reaches the extensions
+only through a few backward-compatible hooks: `TrueGrid.extra_survivors`, `BeliefMap` without
+a pre-marked survivor, `survivors_seen()`, `World.on_survivor`, and aftershocks that protect
+every survivor. With default arguments these hooks leave the core bit-identical ("rule zero",
+`docs/extensions.md` §3). Its results are in `results/ext/` and `docs/extensions.md`.
 
 Outside the package, `scripts/make_figures.py` regenerates the simulator figures in
 `docs/figures/` (the GIF, two screenshots and the plan tree; the comparison screenshot comes
@@ -469,6 +497,10 @@ The rule is held in place in several ways:
   documented exception: they live in `config.py` (`docs/plan.md` §3.12).
 * Every app runs headless with `SDL_VIDEODRIVER=dummy` (`prepare_environment`), so the tests
   drive `tick`, `render` and `handle_key` without a window.
+* The frame loop has one body, `BaseApp.run_frame`, used by the blocking `run()` and by
+  `run_async()`, which yields to asyncio once per frame. The pygbag browser build
+  (`web/main.py`, `scripts/build_web.py`, [`web.md`](web.md)) therefore runs the same simulator
+  code. Only recording is switched off there (`record.recording_available()`).
 
 ---
 
