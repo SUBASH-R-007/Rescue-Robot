@@ -52,3 +52,16 @@ results/ext/*
 !results/ext/plots/
 results/ext/plots/*
 !results/ext/plots/*.png
+# LAO* experiment (python -m rescue.experiments --config experiments/lao.yaml --out results/lao):
+# the full run's raw.csv, summary, hypotheses, LAO.md (lao_report), run metadata and plots
+# are committed.
+!results/lao/
+results/lao/*
+!results/lao/raw.csv
+!results/lao/summary.csv
+!results/lao/HYPOTHESES.md
+!results/lao/LAO.md
+!results/lao/run_meta.json
+!results/lao/plots/
+results/lao/plots/*
+!results/lao/plots/*.png

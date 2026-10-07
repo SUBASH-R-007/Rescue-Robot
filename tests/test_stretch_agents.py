@@ -84,7 +84,8 @@ def test_registry_names() -> None:
     from rescue import agents
 
     assert AGENT_NAMES == ("andor", "astar_fixed", "astar_replan")
-    assert tuple(agents.ALL_AGENT_NAMES) == (*AGENT_NAMES, "dstar_lite", "vi_expected")
+    assert tuple(agents.ALL_AGENT_NAMES) == (
+        *AGENT_NAMES, "dstar_lite", "vi_expected", "lao_expected")
     for name in agents.ALL_AGENT_NAMES:
         agent = make_agent(name, UniformSlip(0.2))
         assert agent.name == name

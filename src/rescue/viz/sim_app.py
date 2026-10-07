@@ -442,8 +442,12 @@ class BaseApp:
         self.panel.draw(surface, self._panel_info(), self.log, self.tree)
         self._draw_extra(surface)
         if self.show_help:
-            draw_help_overlay(surface, pal, self.fonts, help_lines(self.help_items))
+            draw_help_overlay(surface, pal, self.fonts, self._help_lines())
         return surface
+
+    def _help_lines(self) -> list[tuple[str, str] | str]:
+        """Items of the help overlay (:func:`help_lines`; the extension simulator overrides)."""
+        return help_lines(self.help_items)
 
     def frame(self, dt_ms: float) -> None:
         """One frame: :meth:`tick`, :meth:`render` and capture for an active recording."""

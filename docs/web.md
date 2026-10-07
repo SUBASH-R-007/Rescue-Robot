@@ -31,8 +31,9 @@ python scripts/build_web.py --out some/dir # another app folder
 The script stages `build/web_app/`, which `.gitignore` excludes like the rest of `build/`:
 
 * `main.py`, copied from `web/main.py`;
-* `rescue/`, the package without `experiments/`, `ext/` and `__pycache__`, which the
-  simulator never imports. `mapgen.py` is kept;
+* `rescue/`, the package without `experiments/`, `ext/`, `viz/ext_sim_app.py` (the
+  extension simulator, which needs `ext/`) and `__pycache__`, which the simulator never
+  imports. `mapgen.py` is kept;
 * `maps/*.txt` and `fonts/` (the two DejaVu fonts and their licence).
 
 It then runs `python -m pygbag --build --width 1280 --height 800 --title "Rescue Robot

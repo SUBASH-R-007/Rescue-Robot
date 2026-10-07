@@ -761,7 +761,8 @@ Over all 99,400 missions of the run:
 * no noisy sensing;
 * no unknown survivor location;
 * no multiple survivors;
-* no LAO\* or terrain-aware AND-OR costs (the optional extensions of brief §8);
+* no terrain-aware AND-OR costs (an optional extension of brief §8); LAO\* was added later as
+  the stretch agent `lao_expected` (plan §3.15.1) and is not part of this run;
 * no sensor radius r = 0 in the experiments (it is used only in tests);
 * no matched-tie-break versions of the aftershock, sensor and replan-mode blocks;
 * no measurement of AND-OR rollbacks in the harness;

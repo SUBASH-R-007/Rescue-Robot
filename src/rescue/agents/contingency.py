@@ -21,10 +21,11 @@ from rescue.grid import Pos, fmt_pos
 from rescue.model import Action, ProblemModel, TransitionModel
 from rescue.plan import Plan
 from rescue.planners.andor import AndOrPlanner, PlanResult
+from rescue.planners.lao_star import LaoStarPlanner
 from rescue.planners.value_iteration import ValueIterationPlanner
 
-#: Planners a contingency agent can use: both map ``plan(model, start)`` to a ``PlanResult``.
-Planner = AndOrPlanner | ValueIterationPlanner
+#: Planners a contingency agent can use: all map ``plan(model, start)`` to a ``PlanResult``.
+Planner = AndOrPlanner | ValueIterationPlanner | LaoStarPlanner
 
 log = logging.getLogger(__name__)
 

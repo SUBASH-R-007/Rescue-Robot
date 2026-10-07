@@ -1,4 +1,5 @@
-"""Verdicts on the extension claims X1–X5 → ``results/ext/EXTENSIONS.md`` (plan §3.14).
+"""Verdicts on the extension claims X1–X6 → ``results/ext/EXTENSIONS.md`` (plan §3.14,
+§3.15.2).
 
 Each claim is checked against typed raw rows (:func:`rescue.ext.experiments.read_raw`) with the
 core harness's statistics (:mod:`rescue.experiments.stats`: Wilson intervals, Student-t
@@ -12,7 +13,10 @@ intervals, paired differences with the map as the unit) and gets a verdict (✅ 
 * **X3** the greedy nearest-first order is within 10 % of the optimal tour (per k);
 * **X4** with noisy sensing collisions become possible, but success stays ≥ 95 % at ε = 0.1;
 * **X5** under noise ``search_andor`` has at most ``EXT_CLAIM_BUMP_MARGIN`` more collisions
-  per mission than ``search_astar`` (paired non-inferiority, pooled and at every ε).
+  per mission than ``search_astar`` (paired non-inferiority, pooled and at every ε);
+* **X6** (round 2) with false positives up to ``EXT_CLAIM_FP`` (and false negatives at the
+  ``noisy_fp`` block's rate) ``search_andor`` still rescues ≥ 95 %; reported alongside, without
+  a verdict: the paired steps cost of false positives, fallback usage and bumps.
 """
 
 from __future__ import annotations
@@ -25,6 +29,7 @@ from typing import Any
 
 from rescue.config import (
     EXT_CLAIM_BUMP_MARGIN,
+    EXT_CLAIM_FP,
     EXT_CLAIM_NOISE,
     EXT_CLAIM_SUCCESS_TARGET,
     EXT_CLAIM_TOUR_RATIO_MAX,
@@ -37,6 +42,7 @@ from rescue.ext.experiments import (
     EXT_TASK_KEYS,
     MULTI_BLOCK,
     NOISY_BLOCK,
+    NOISY_FP_BLOCK,
     SEARCH_BLOCK,
     steps_per_rescue,
     tour_ratio,
@@ -53,6 +59,11 @@ UNKNOWN_LABEL: str = "unknown"
 KNOWN_LABEL: str = "known"
 #: X2: columns that pair an unknown-location run with its known-location twin.
 LOCATION_PAIR_KEYS: tuple[str, ...] = tuple(k for k in EXT_TASK_KEYS if k != "survivors_known")
+#: X6: columns that pair a run at a false-positive rate with its fp = 0 twin.
+FP_PAIR_KEYS: tuple[str, ...] = tuple(k for k in EXT_TASK_KEYS if k != "false_positive")
+#: Pseudo-agent labels used to pair a run with false positives with its fp = 0 twin (X6).
+FP_LABEL: str = "with_fp"
+CLEAN_LABEL: str = "fp0"
 #: Tolerance when matching float factors read back from CSV.
 FLOAT_TOL: float = 1e-9
 _PCT_DIGITS: int = 1
@@ -461,14 +472,126 @@ def claim_x5(rows: Sequence[Row]) -> Hypothesis:
     return Hypothesis(X5_CLAIM, verdict, measured, detail, "X5")
 
 
+# --- X6 --------------------------------------------------------------------------------------
+X6_CLAIM = (f"with false positives up to ε_fp = {EXT_CLAIM_FP:g} `{SEARCH_ANDOR}` still rescues "
+            f"≥ {_pct(EXT_CLAIM_SUCCESS_TARGET)} of missions")
+
+
+def _fp_diff(rows: Sequence[Row], agent: str, fp: float, metric: str,
+             require_success: bool) -> PairedDifference:
+    """Paired ``metric(fp) − metric(fp = 0)`` of ``agent`` (same map, condition and streams),
+    map as the unit."""
+    labelled = [dict(r, agent=CLEAN_LABEL if r["false_positive"] == 0.0 else FP_LABEL)
+                for r in rows if r["agent"] == agent
+                and (r["false_positive"] == 0.0 or abs(r["false_positive"] - fp) <= FLOAT_TOL)]
+    return paired_difference(labelled, metric, FP_LABEL, CLEAN_LABEL, keys=FP_PAIR_KEYS,
+                             require_success=require_success, cluster_keys=EXT_MAP_KEYS)
+
+
+def _fp_table(block: Sequence[Row]) -> str:
+    body = []
+    for agent in _distinct(block, "agent"):
+        for fp in _distinct(block, "false_positive"):
+            own = _where(block, agent=agent, false_positive=fp)
+            failures = ", ".join(f"{reason} {n}" for reason in ("unreachable", "budget", "aborted")
+                                 if (n := sum(r["failure_reason"] == reason for r in own)))
+            body.append([
+                f"`{agent}`", f"{fp:g}", _rate(_successes(own), len(own)), failures or "none",
+                sum(r["bumps"] for r in own), _mean([float(r["bumps"]) for r in own]),
+                sum(r["fallback_replans"] > 0 for r in own),
+                _mean([float(r["fallback_replans"]) for r in own]),
+                _mean([float(r["steps"]) for r in own if r["success"]]),
+            ])
+    return _table(["agent", "ε_fp", "success (Wilson 95 % CI)", "failures", "Σ bumps",
+                   "bumps per mission", "missions with fallback", "fallbacks per mission",
+                   "steps (successful)"], body)
+
+
+def _fp_cost_table(block: Sequence[Row]) -> str:
+    body = []
+    for agent in _distinct(block, "agent"):
+        for fp in _distinct(block, "false_positive"):
+            if fp == 0.0:
+                continue
+            body.append([f"`{agent}`", f"{fp:g}",
+                         _diff(_fp_diff(block, agent, fp, "steps", True), "steps"),
+                         _diff(_fp_diff(block, agent, fp, "bumps", False), "bumps")])
+    return _table(["agent", "ε_fp", "steps(ε_fp) − steps(0), successful pairs (95 % CI)",
+                   "bumps(ε_fp) − bumps(0), all pairs (95 % CI)"], body)
+
+
+def claim_x6(rows: Sequence[Row]) -> Hypothesis:
+    """X6: ``search_andor``'s success at every false-positive rate in ``(0, EXT_CLAIM_FP]``
+    (block ``noisy_fp``); the steps cost, fallback usage and bumps are reported, not judged."""
+    block = _block(rows, NOISY_FP_BLOCK)
+    own = [r for r in block if r["agent"] == SEARCH_ANDOR]
+    levels = [fp for fp in _distinct(own, "false_positive")
+              if 0.0 < fp <= EXT_CLAIM_FP + FLOAT_TOL]
+    if not any(abs(fp - EXT_CLAIM_FP) <= FLOAT_TOL for fp in levels):
+        return _not_measured("X6", X6_CLAIM, f"no `{SEARCH_ANDOR}` runs at ε_fp = "
+                                             f"{EXT_CLAIM_FP:g} in block `{NOISY_FP_BLOCK}`")
+    verdicts: dict[float, str] = {}
+    texts = []
+    for fp in levels:
+        runs = _where(own, false_positive=fp)
+        ok, n = _successes(runs), len(runs)
+        verdicts[fp] = _rate_verdict(ok, n, EXT_CLAIM_SUCCESS_TARGET)
+        texts.append(f"ε_fp = {fp:g}: {_rate(ok, n)} {verdicts[fp]}")
+    if VERDICT_FAIL in verdicts.values():
+        verdict = VERDICT_FAIL
+    elif all(v == VERDICT_PASS for v in verdicts.values()):
+        verdict = VERDICT_PASS
+    else:
+        verdict = VERDICT_WARN
+    claim_runs = _where(own, false_positive=EXT_CLAIM_FP)
+    cost = _fp_diff(block, SEARCH_ANDOR, EXT_CLAIM_FP, "steps", True)
+    fallback_missions = sum(r["fallback_replans"] > 0 for r in claim_runs)
+    measured = (f"{'; '.join(texts)}; at ε_fp = {EXT_CLAIM_FP:g} (informational): steps cost "
+                f"{_diff(cost, 'steps')}, fallback in {fallback_missions}/{len(claim_runs)} "
+                f"missions, Σ bumps {sum(r['bumps'] for r in claim_runs)}")
+    fns = ", ".join(f"{e:g}" for e in _distinct(block, "false_negative"))
+    detail = "\n".join([
+        f"Block `{NOISY_FP_BLOCK}` (round 2): the debris sensor reports a true DEBRIS cell as "
+        f"OPEN with probability ε (here ε = {fns}) and a true OPEN cell as DEBRIS with "
+        "probability ε_fp (two-sided noise; survivor cells, the robot's own cell and a cell a "
+        "bump touched are never misreported); the belief is the two-sided Bayes map "
+        "(`ProbBelief`). A false positive can raise a free cell over the debris threshold (a "
+        "phantom wall); when no target is reachable under the threshold, `SearchAgent` "
+        "falls back to relaxed passability (only near-certain debris blocks) before giving up. "
+        "A fallback is counted once per episode (a switch from strict to relaxed passability; "
+        "a target re-selection made while relaxed that falls back again is not counted). "
+        "`search_andor` re-selects more often while relaxed (a cell of its plan envelope, which "
+        "holds skid cells off the main path, turning near-certain debris triggers it), so the "
+        "fallback counts of the two agents measure partly different things and are not "
+        "directly comparable. ε_fp = 0 replays block `noisy` at the same ε (same maps and "
+        "streams).",
+        "",
+        "Rule: at every false-positive rate 0 < ε_fp ≤ "
+        f"{EXT_CLAIM_FP:g} of the block, ✅ if `{SEARCH_ANDOR}`'s success rate is ≥ "
+        f"{_pct(EXT_CLAIM_SUCCESS_TARGET)}; ⚠️ if it is below but the Wilson 95 % upper bound "
+        f"reaches {_pct(EXT_CLAIM_SUCCESS_TARGET)}; ❌ if the upper bound is below it. Overall ✅ "
+        "only if every level is ✅, ❌ if any level is ❌, else ⚠️ (also ⚠️ \"not measured\" "
+        f"without runs at ε_fp = {EXT_CLAIM_FP:g}). The steps cost (paired ε_fp − 0 on the same "
+        "map, both missions successful, map as the unit), the fallback usage and the bumps are "
+        "reported without a verdict: no threshold was fixed for them before the run.",
+        "",
+        _fp_table(block),
+        "",
+        "Paired cost of false positives (each agent against itself at ε_fp = 0):",
+        "",
+        _fp_cost_table(block),
+    ])
+    return Hypothesis(X6_CLAIM, verdict, measured, detail, "X6")
+
+
 # --- report ----------------------------------------------------------------------------------
 CLAIMS: tuple[Callable[[Sequence[Row]], Hypothesis], ...] = (
-    claim_x1, claim_x2, claim_x3, claim_x4, claim_x5,
+    claim_x1, claim_x2, claim_x3, claim_x4, claim_x5, claim_x6,
 )
 
 
 def evaluate_claims(rows: Sequence[Row]) -> list[Hypothesis]:
-    """X1–X5 on typed raw rows, in order."""
+    """X1–X6 on typed raw rows, in order."""
     return [claim(rows) for claim in CLAIMS]
 
 
@@ -522,7 +645,7 @@ def render_markdown(rows: Sequence[Row], claims: Sequence[Hypothesis],
 
 def write_extensions(rows: Sequence[Row], path: str | Path,
                      meta_path: str | Path | None = None) -> Path:
-    """Evaluate X1–X5 and write the Markdown report (metadata from ``run_meta.json`` next to
+    """Evaluate X1–X6 and write the Markdown report (metadata from ``run_meta.json`` next to
     ``path`` unless ``meta_path`` is given)."""
     out = Path(path)
     source = Path(meta_path) if meta_path is not None else out.parent / META_FILE

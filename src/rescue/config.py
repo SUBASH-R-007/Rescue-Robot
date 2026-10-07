@@ -277,7 +277,7 @@ COMPARE_DEFAULT_SEED: int = 7
 COMPARE_DEFAULT_SIZE: tuple[int, int] = (15, 15)
 #: Number of agents (panes) the comparison accepts.
 COMPARE_MIN_AGENTS: int = 2
-COMPARE_MAX_AGENTS: int = 5
+COMPARE_MAX_AGENTS: int = 6  # 5 → 6 in round 2 (lao_expected): every agent fits
 #: Initial index into ``viz.theme.SPEEDS`` (8 lock-step ticks per second).
 COMPARE_DEFAULT_SPEED_INDEX: int = 4
 #: Gap between panes and inner padding of a pane, in pixels.
@@ -369,3 +369,40 @@ EXT_CLAIM_NOISE: float = 0.1
 #: lowest noise level, strict at the highest. The value was set with the claim, before the
 #: full run, and must not be changed after seeing its results.
 EXT_CLAIM_BUMP_MARGIN: float = 0.1
+
+# --- Round 2: LAO* (planners/lao_star.py, agents/lao_expected.py, plan §3.15.1) --------------
+#: LAO* gives up (with a warning, ``converged`` False) after this many expansion rounds. Each
+#: round expands at least one new state, so any map with at most this many free cells always
+#: finishes; the cap only guards against a bug.
+LAO_MAX_ITERATIONS: int = 100_000
+#: Bellman residual (in steps) at which LAO*'s value iteration on the best partial solution
+#: graph after each expansion round (step 2c) stops. It only steers which states are expanded
+#: next: the final convergence test on the best solution graph always uses ``VI_TOLERANCE``,
+#: so the start value is optimal whatever this is. Chosen for speed only (planning calls
+#: recorded from vi_expected missions, 3 maps each of random_rubble / maze_corridors at
+#: 10/20/30, p = 0.2): 0.1 and below cost up to ~2x the time of 0.5 for ~2 % fewer expanded
+#: states; 2.0 and above (one sweep per round) expand ~10-15 % more states.
+LAO_EXPANSION_TOLERANCE: float = 0.5
+#: LAO* gives up (with a warning, ``converged`` False) after this many convergence tests
+#: (step 3: value iteration on a best solution graph without tips). Counted separately from
+#: the expansion rounds so that ``LAO_MAX_ITERATIONS`` alone caps those. A test that does not
+#: stop the search has changed the best graph (new tips or a new state set); like the
+#: expansion cap, this only guards against a bug.
+LAO_MAX_CONVERGENCE_TESTS: int = 100_000
+
+# --- Round 2: two-sided sensor noise (rescue.ext, docs/plan.md §3.15.2) ----------------------
+#: Exclusive upper bound of the false-positive rate of ``NoisySensor`` / ``ProbBelief``: below
+#: one half (with a false-negative rate below one half too) a DEBRIS reading is more likely on
+#: a debris cell than on a free one, so every reading still moves the belief the right way.
+EXT_MAX_FALSE_POSITIVE: float = 0.5
+#: ``SearchAgent`` fallback: when no target is reachable (or no plan exists) under the debris
+#: threshold, targets and plans are recomputed treating every cell with debris probability
+#: below this value as passable. Certain debris (P = 1: touched by a bump, or read as DEBRIS
+#: by a sensor without false positives) stays blocked, and so does a cell that repeated DEBRIS
+#: readings pushed to P >= this value (with false-negative and false-positive rates of 0.1,
+#: four more DEBRIS than OPEN readings from the prior); a cell suspected from fewer noisy
+#: readings may be tried.
+EXT_FALLBACK_MAX_P: float = 0.999
+#: X6: false-positive rate at which ``search_andor``'s success (target
+#: ``EXT_CLAIM_SUCCESS_TARGET``) is checked, fixed before the full run.
+EXT_CLAIM_FP: float = 0.1

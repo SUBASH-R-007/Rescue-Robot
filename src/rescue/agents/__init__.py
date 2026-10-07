@@ -1,8 +1,9 @@
 """Agents: the AND-OR contingency agent, the two A* baselines and the stretch agents.
 
 docs/plan.md §3.8. ``AGENT_NAMES`` are the three agents the UI and the head-to-head comparison
-show; ``STRETCH_AGENT_NAMES`` are the brief §5 stretch agents (``dstar_lite``,
-``vi_expected``); ``make_agent`` builds any of ``ALL_AGENT_NAMES``.
+show; ``STRETCH_AGENT_NAMES`` are the stretch agents (brief §5: ``dstar_lite``,
+``vi_expected``; brief §8.1: ``lao_expected``); ``make_agent`` builds any of
+``ALL_AGENT_NAMES``.
 """
 
 from __future__ import annotations
@@ -21,6 +22,7 @@ from rescue.agents.base import (
 )
 from rescue.agents.contingency import ContingencyAgent
 from rescue.agents.dstar_lite import DStarLiteAgent
+from rescue.agents.lao_expected import LaoExpectedAgent
 from rescue.agents.vi_expected import ValueIterationAgent
 from rescue.config import AgentConfig, PlannerConfig
 from rescue.model import TransitionModel
@@ -32,10 +34,11 @@ AGENT_NAMES: tuple[str, ...] = (
     ReplanAStarAgent.name,
 )
 
-#: Stretch agents (brief §5), not part of the UI's agent cycle.
+#: Stretch agents (brief §5 and §8.1), not part of the UI's agent cycle.
 STRETCH_AGENT_NAMES: tuple[str, ...] = (
     DStarLiteAgent.name,
     ValueIterationAgent.name,
+    LaoExpectedAgent.name,
 )
 
 #: Every agent ``make_agent`` can build, in display order.
@@ -50,6 +53,7 @@ AGENTS: dict[str, type[Agent]] = {
         ReplanAStarAgent,
         DStarLiteAgent,
         ValueIterationAgent,
+        LaoExpectedAgent,
     )
 }
 
@@ -83,6 +87,7 @@ __all__ = [
     "DStarLiteAgent",
     "Decision",
     "FixedAStarAgent",
+    "LaoExpectedAgent",
     "Observation",
     "PathAgent",
     "PlanSnapshot",

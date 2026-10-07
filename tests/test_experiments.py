@@ -1101,6 +1101,7 @@ def test_agent_style_is_fixed() -> None:
         "astar_replan": ("#1baf7a", "^"),
         "dstar_lite": ("#eda100", "D"),
         "vi_expected": ("#e87ba4", "v"),
+        "lao_expected": ("#9b78e6", "<"),
     }
     got = {
         agent: (style.colour.lower(), style.marker) for agent, style in plots.AGENT_STYLE.items()

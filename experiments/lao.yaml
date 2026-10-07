@@ -1,0 +1,29 @@
+# LAO* scaling experiment (brief §8.1, docs/plan.md §3.15.1). Run it with an explicit output
+# directory; without --out the harness writes to results/ and would overwrite the main run:
+#
+#   python -m rescue.experiments --config experiments/lao.yaml --out results/lao
+#   python -m rescue.experiments.lao_report results/lao      # → results/lao/LAO.md
+#
+# HYPOTHESES.md only covers the core claims H1–H7 (mostly "not measured" here); LAO.md has this
+# experiment's own analysis: paired lao−vi / lao−andor steps, planning time per plan by size
+# (95 % CIs, LAO*/VI ratios) and LAO* expansions per plan.
+#
+# Planning effort and plan quality of the three contingency planners on the same maps and
+# outcome streams (common random numbers: the seed depends only on base_seed, scenario, size
+# and replicate): andor (first strong-cyclic plan), vi_expected (expected-steps optimal by
+# value iteration over every free cell) and lao_expected (the same optimum by LAO* heuristic
+# search). nodes_expanded is not comparable across them (andor: AND-OR expansions; VI: Bellman
+# backups = sweeps x proper-region size; LAO*: states expanded); compare planning_ms and steps.
+name: lao
+base_seed: 2026
+n_maps: 50
+agents: [andor, vi_expected, lao_expected]
+workers: null          # null = CPUs - 2
+
+blocks:
+  # Planning time and steps vs grid size (open rubble vs corridors, where LAO*'s heuristic
+  # prunes differently).
+  - name: lao_scaling
+    scenarios: [random_rubble, maze_corridors]
+    sizes: [10, 15, 20, 25, 30]
+    slip_p: [0.2]

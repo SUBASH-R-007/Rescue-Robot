@@ -19,6 +19,13 @@ survivor = cross, start = 'S' tag, robot = disc with outline, arrived = segment 
 direction chevron, slipped = ring, skid = arrow, blocked = '×', policy = arrows (with a
 contrasting halo, so they read on dark unknown cells and light open cells alike; on an unknown
 cell the '?' then moves to the top-right corner instead of sitting under the arrow).
+
+Extension marks (``viz/ext_sim_app.py``, docs/plan.md §3.15.3), drawn only when the scene sets
+them, so a core scene renders exactly as before: rescued survivor = ring + tick badge, target =
+dashed square + flag, P(debris) of observed open cells = one-way hatch (denser and more opaque
+for higher P, log scale), believed debris with P(debris) < 1 (a possible phantom, two-sided
+noise) = lighter debris + '?' badge, extra survivors = the rescue ring under the robot as on
+``survivor``.
 """
 
 from __future__ import annotations
@@ -98,6 +105,19 @@ class GridScene:
     #: Identity of the trace (e.g. a mission serial): a different id redraws the trace layer
     #: from scratch even if the new trace happens to extend the old one's first / last marks.
     trace_id: int = 0
+    # --- extension marks (viz/ext_sim_app.py, plan §3.15.3); the defaults draw nothing, so a
+    # core scene renders exactly as before.
+    #: Further survivor cells besides ``survivor`` (the robot disc shrinks inside a ring on
+    #: any of them, as on ``survivor``). Their crosses come from ``belief`` / ``true_cells``.
+    survivors: tuple[Pos, ...] = ()
+    #: Rescued survivors: a ring and a tick badge.
+    rescued: frozenset[Pos] = frozenset()
+    #: The agent's current target (frontier cell or survivor): dashed square + flag.
+    target: Pos | None = None
+    #: P(debris) per cell (noisy sensing), or None: observed cells shown OPEN get a one-way
+    #: hatch whose alpha follows log P (:func:`prob_shade_levels`); cells shown DEBRIS with
+    #: P < 1 (possible phantoms, only with false positives) are lightened and get a '?' badge.
+    debris_prob: np.ndarray | None = None
 
     @classmethod
     def from_mission(
@@ -190,6 +210,59 @@ def draw_dashed_rect(
         end = min(y + dash, y1)
         pygame.draw.line(surface, colour, (x0, y), (x0, end), width)
         pygame.draw.line(surface, colour, (x1, y), (x1, end), width)
+
+
+def prob_shade_levels(p_debris: np.ndarray) -> np.ndarray:
+    """Shade level (0 = none, 1 .. :data:`theme.PROB_SHADE_LEVELS`) of each P(debris) value:
+    ``ceil(L · log(P / min) / log(max / min))`` clipped to ``[1, L]``, 0 for ``P <= min``
+    (``min`` / ``max`` = :data:`theme.PROB_SHADE_MIN` / :data:`theme.PROB_SHADE_MAX`)."""
+    p = np.asarray(p_debris, dtype=np.float64)
+    lo, hi, n = theme.PROB_SHADE_MIN, theme.PROB_SHADE_MAX, theme.PROB_SHADE_LEVELS
+    with np.errstate(divide="ignore", invalid="ignore"):
+        scaled = np.log(np.maximum(p, lo) / lo) / math.log(hi / lo)
+    levels = np.clip(np.ceil(scaled * n), 1, n).astype(np.int16)
+    levels[~(p > lo)] = 0
+    return levels
+
+
+def _level_frac(level: int) -> float:
+    """Position of shade ``level`` (1 .. L) in [0, 1]."""
+    n = theme.PROB_SHADE_LEVELS
+    return (level - 1) / (n - 1) if n > 1 else 1.0
+
+
+def prob_level_alpha(level: int) -> int:
+    """Hatch alpha of shade ``level`` (1 .. L), linear from the min to the max alpha."""
+    lo, hi = theme.PROB_HATCH_MIN_ALPHA, theme.PROB_HATCH_MAX_ALPHA
+    return round(lo + (hi - lo) * _level_frac(level))
+
+
+def prob_hatch_surface(size: int, colour: tuple[int, int, int], level: int) -> pygame.Surface:
+    """Transparent ``size`` x ``size`` tile with the one-way P(debris) hatch of ``level``
+    (more opaque and denser lines at higher levels)."""
+    tile = pygame.Surface((size, size), pygame.SRCALPHA)
+    rgba = (*colour, prob_level_alpha(level))
+    hi, lo = theme.PROB_HATCH_SPACING_MAX_FRAC, theme.PROB_HATCH_SPACING_MIN_FRAC
+    frac = hi + (lo - hi) * _level_frac(level)
+    spacing = max(theme.MIN_HATCH_SPACING, round(size * frac))
+    width = stroke(size, theme.PROB_HATCH_WIDTH_FRAC)
+    for k in range(-size, 2 * size, spacing):
+        pygame.draw.line(tile, rgba, (k, size), (k + size, 0), width)
+    return tile
+
+
+def prob_legend_swatches(palette: Palette, size: int = theme.LEGEND_SWATCH_SIZE,
+                         ) -> tuple[pygame.Surface, ...]:
+    """Legend swatches of the P(debris) shading: an open cell with each level's hatch."""
+    colour = theme.ext_colours(palette).prob_hatch
+    swatches = []
+    for level in range(1, theme.PROB_SHADE_LEVELS + 1):
+        swatch = pygame.Surface((size, size))
+        swatch.fill(palette.open)
+        swatch.blit(prob_hatch_surface(size, colour, level), (0, 0))
+        pygame.draw.rect(swatch, palette.grid_line, swatch.get_rect(), 1)
+        swatches.append(swatch)
+    return tuple(swatches)
 
 
 class GridView:
@@ -407,13 +480,69 @@ class GridView:
         envelope = scene.envelope
         if not isinstance(envelope, frozenset):  # a mutable set could change behind the key
             envelope = frozenset(envelope)
+        shades = self._prob_shades(scene)
         return (
             self._tiles_key, scene.rows, scene.cols, belief,
             np.ascontiguousarray(scene.true_cells).tobytes(),
             np.ascontiguousarray(scene.high_slip).tobytes(),
             scene.start, scene.survivor, scene.show_true and scene.belief is not None,
-            envelope, policy,
+            envelope, policy, None if shades is None else shades.tobytes(),
+            self._phantom_key(scene),
         )
+
+    @staticmethod
+    def _phantom_cells(scene: GridScene) -> np.ndarray | None:
+        """Cells shown DEBRIS whose P(debris) is below ``PHANTOM_CERTAIN_P`` (they may be
+        phantoms of a false-positive reading); None without ``debris_prob`` or a belief."""
+        if scene.debris_prob is None or scene.belief is None:
+            return None
+        return (np.asarray(scene.belief) == _DEBRIS) & (
+            np.asarray(scene.debris_prob) < theme.PHANTOM_CERTAIN_P)
+
+    def _phantom_key(self, scene: GridScene) -> bytes | None:
+        """Version-key part of the phantom marks: None when there are none, so the key (and
+        the layer) of a scene without phantoms is unchanged."""
+        cells = self._phantom_cells(scene)
+        return None if cells is None or not cells.any() else np.packbits(cells).tobytes()
+
+    def _phantom_tile(self) -> pygame.Surface:
+        """Cached overlay of a possible phantom: open-coloured veil + '?' corner badge."""
+        tile = self._tiles.get("phantom")
+        if tile is None:
+            s, pal = self.cell, self.palette
+            surf = pygame.Surface((s, s), pygame.SRCALPHA)
+            surf.fill((*pal.open, theme.PHANTOM_VEIL_ALPHA))
+            if s >= theme.UNKNOWN_CORNER_MIN_CELL:
+                side = max(theme.MIN_START_TAG, round(s * theme.PHANTOM_BADGE_FRAC))
+                inset = max(1, round(s * theme.PHANTOM_BADGE_INSET_FRAC))
+                badge = pygame.Rect(s - inset - side, inset, side, side)
+                pygame.draw.rect(surf, pal.unknown, badge)
+                glyph = self.fonts.sized(round(s * theme.PHANTOM_BADGE_FONT_FRAC)).render(
+                    "?", True, pal.unknown_glyph)
+                surf.blit(glyph, glyph.get_rect(center=badge.center))
+            tile = _finish(surf, alpha=True)
+            self._tiles["phantom"] = tile
+        return tile
+
+    @staticmethod
+    def _prob_shades(scene: GridScene) -> np.ndarray | None:
+        """Shade level per cell (see :func:`prob_shade_levels`) on observed cells shown OPEN,
+        0 elsewhere; None without ``debris_prob`` (core scenes) or without a belief."""
+        if scene.debris_prob is None or scene.belief is None:
+            return None
+        levels = prob_shade_levels(scene.debris_prob)
+        levels[np.asarray(scene.belief) != _OPEN] = 0
+        return levels
+
+    def _prob_tile(self, level: int) -> pygame.Surface:
+        """Cached hatch tile of shade ``level`` (dropped with the other tiles)."""
+        key = ("prob", level)
+        tile = self._tiles.get(key)
+        if tile is None:
+            colour = theme.ext_colours(self.palette).prob_hatch
+            tile = _finish(prob_hatch_surface(self.cell, colour, level), alpha=True)
+            self._tiles[key] = tile
+        return tile
 
     @staticmethod
     def _arrow_cells(scene: GridScene) -> dict[Pos, Action]:
@@ -457,6 +586,15 @@ class GridView:
         layer.blits(blits, doreturn=False)
         if overlay:
             layer.blits(overlay, doreturn=False)
+        shades = self._prob_shades(scene)
+        if shades is not None:
+            layer.blits([(self._prob_tile(int(shades[r, c])), (c * s, r * s))
+                         for r, c in np.argwhere(shades > 0)], doreturn=False)
+        phantoms = self._phantom_cells(scene)
+        if phantoms is not None and phantoms.any():
+            tile = self._phantom_tile()
+            layer.blits([(tile, (c * s, r * s)) for r, c in np.argwhere(phantoms)],
+                        doreturn=False)
         env = tiles["envelope"]
         layer.blits([(env, (c * s, r * s)) for r, c in scene.envelope
                      if 0 <= r < scene.rows and 0 <= c < scene.cols], doreturn=False)
@@ -576,7 +714,7 @@ class GridView:
         s, pal = self.cell, self.palette
         centre = self.cell_centre(scene.robot)
         frac = theme.ROBOT_RADIUS_FRAC
-        if scene.robot == scene.survivor:
+        if scene.robot == scene.survivor or scene.robot in scene.survivors:
             frac = theme.ROBOT_ON_SURVIVOR_RADIUS_FRAC
             ring = max(theme.MIN_MARK_RADIUS, round(s * theme.RESCUE_RING_RADIUS_FRAC))
             pygame.draw.circle(surface, pal.survivor, centre, ring,
@@ -585,6 +723,55 @@ class GridView:
         pygame.draw.circle(surface, pal.robot, centre, radius)
         pygame.draw.circle(surface, pal.robot_outline, centre, radius,
                            stroke(s, theme.ROBOT_OUTLINE_FRAC))
+
+    def _draw_target(self, surface: pygame.Surface, target: Pos) -> None:
+        """The agent's target: a dashed square on a solid halo, and a flag in the top-right
+        corner (shape + colour, readable on dark unknown and light open cells). On cells
+        smaller than ``TARGET_COMPACT_MAX_CELL`` the square sits on the cell edge with a thin
+        halo and there is no flag, so a survivor's cross under the target stays readable."""
+        s = self.cell
+        colours = theme.ext_colours(self.palette)
+        compact = s < theme.TARGET_COMPACT_MAX_CELL
+        inset = 0 if compact else max(1, round(s * theme.TARGET_INSET_FRAC))
+        box = self.cell_rect(target).inflate(-2 * inset, -2 * inset)
+        width = stroke(s, theme.TARGET_STROKE_FRAC)
+        halo = theme.TARGET_COMPACT_HALO_EXTRA if compact else theme.TARGET_HALO_EXTRA
+        pygame.draw.rect(surface, colours.target_halo, box, width + halo)
+        draw_dashed_rect(surface, colours.target, box, width,
+                         dash=max(2, round(s * theme.TARGET_DASH_FRAC)),
+                         gap=max(1, round(s * theme.TARGET_GAP_FRAC)))
+        if compact:
+            return
+        flag_inset = round(s * theme.TARGET_FLAG_INSET_FRAC)
+        length = max(3, round(s * theme.TARGET_FLAG_LEN_FRAC))
+        height = max(2, round(s * theme.TARGET_FLAG_HEIGHT_FRAC))
+        pole_x = box.right - flag_inset - length
+        top = box.top + flag_inset
+        bottom = top + max(4, round(s * theme.TARGET_FLAG_POLE_FRAC))
+        pennant = [(pole_x, top), (pole_x + length, top + height // 2), (pole_x, top + height)]
+        pygame.draw.line(surface, colours.target_halo, (pole_x, top), (pole_x, bottom),
+                         width + theme.TARGET_HALO_EXTRA)
+        pygame.draw.polygon(surface, colours.target, pennant)
+        pygame.draw.polygon(surface, colours.target_halo, pennant, 1)
+        pygame.draw.line(surface, colours.target, (pole_x, top), (pole_x, bottom),
+                         max(1, width - 1))
+
+    def _draw_rescued(self, surface: pygame.Surface, p: Pos) -> None:
+        """A rescued survivor: a ring and a tick badge in the bottom-right corner."""
+        s = self.cell
+        colours = theme.ext_colours(self.palette)
+        cx, cy = self.cell_centre(p)
+        ring = max(theme.MIN_MARK_RADIUS, round(s * theme.RESCUED_RING_RADIUS_FRAC))
+        pygame.draw.circle(surface, colours.rescued, (cx, cy), ring,
+                           stroke(s, theme.RESCUED_RING_WIDTH_FRAC))
+        radius = max(theme.RESCUED_BADGE_MIN_RADIUS, round(s * theme.RESCUED_BADGE_RADIUS_FRAC))
+        rect = self.cell_rect(p)
+        bx, by = rect.right - radius - 1, rect.bottom - radius - 1
+        pygame.draw.circle(surface, colours.rescued, (bx, by), radius)
+        diameter = 2 * radius
+        pts = [(bx + fx * diameter, by + fy * diameter) for fx, fy in theme.RESCUED_TICK_POINTS]
+        pygame.draw.lines(surface, colours.rescued_tick, False, pts,
+                          max(2, round(s * theme.RESCUED_TICK_WIDTH_FRAC)))
 
     def draw(self, surface: pygame.Surface, scene: GridScene) -> None:
         """Render ``scene`` into this view's rect on ``surface``."""
@@ -604,8 +791,13 @@ class GridView:
             surface.blits([(flash, self.cell_rect(p).topleft) for p in scene.flash_cells
                            if 0 <= p[0] < scene.rows and 0 <= p[1] < scene.cols],
                           doreturn=False)
+        if scene.target is not None and 0 <= scene.target[0] < scene.rows \
+                and 0 <= scene.target[1] < scene.cols:
+            self._draw_target(surface, scene.target)
         if scene.robot is not None:
             self._draw_robot(surface, scene)
+        for p in sorted(scene.rescued):
+            self._draw_rescued(surface, p)
         # The corner start tag goes on top of the trace (slip rings) and of the robot disc
         # (which may overlap the corner on large cells), so the 'S' always stays readable.
         surface.blit(self._tiles["start"], self.cell_rect(scene.start).topleft)

@@ -425,13 +425,17 @@ DEFAULT_PALETTE = Palette(
         MissionStatus.UNREACHABLE: (112, 70, 170),
     },
     # Same five hexes as the report plots (rescue.experiments.plots.AGENT_STYLE):
-    # #2a78d6, #eb6834, #1baf7a, #eda100, #e87ba4.
+    # #2a78d6, #eb6834, #1baf7a, #eda100, #e87ba4 (+ #9b78e6 lao_expected, round 2).
     agent={
         "andor": (42, 120, 214),
         "astar_fixed": (235, 104, 52),
         "astar_replan": (27, 175, 122),
         "dstar_lite": (237, 161, 0),
         "vi_expected": (232, 123, 164),
+        "lao_expected": (155, 120, 230),  # round 2, LAO* track
+        # extension agents (viz/ext_sim_app.py): the hues of their core planners
+        "search_andor": (42, 120, 214),
+        "search_astar": (27, 175, 122),
     },
 )
 
@@ -485,6 +489,9 @@ HIGH_CONTRAST_PALETTE = Palette(
         "andor": (0, 255, 0),
         "astar_fixed": (255, 255, 0),
         "astar_replan": (0, 255, 255),
+        "lao_expected": (180, 160, 255),  # round 2, LAO* track
+        "search_andor": (0, 255, 0),
+        "search_astar": (0, 255, 255),
     },
 )
 
@@ -702,3 +709,100 @@ SIM_CAPTION: str = "Rescue Robot - simulator"
 REPLAY_CAPTION: str = "Rescue Robot - replay"
 #: Default size of maps produced by ``rescue.mapgen`` scenarios in the simulator (rows, cols).
 GENERATED_MAP_SIZE: tuple[int, int] = (15, 15)
+
+
+# --- extensions in the simulator (viz/ext_sim_app.py, docs/plan.md §3.15.3) -------------------
+# None of these is read on the core path: a GridScene / PanelInfo with default fields renders
+# exactly as before (rule zero, plan §3.15).
+@dataclass(frozen=True)
+class ExtColours:
+    """Colours of the extension marks (kept out of :class:`Palette`, whose fields the core
+    contract lists): rescued ring / tick badge, frontier / rescue target, P(debris) hatch."""
+
+    rescued: RGB
+    rescued_tick: RGB
+    target: RGB
+    target_halo: RGB
+    prob_hatch: RGB
+
+
+#: Extension colours per palette name (:func:`ext_colours`).
+EXT_COLOURS: dict[str, ExtColours] = {
+    "default": ExtColours(
+        rescued=(36, 168, 84),
+        rescued_tick=(255, 255, 255),
+        target=(255, 208, 80),
+        target_halo=(24, 28, 36),
+        prob_hatch=(150, 40, 150),
+    ),
+    "high-contrast": ExtColours(
+        rescued=(0, 200, 0),
+        rescued_tick=(0, 0, 0),
+        target=(255, 255, 0),
+        target_halo=(0, 0, 0),
+        prob_hatch=(255, 0, 255),
+    ),
+}
+
+
+def ext_colours(palette: Palette) -> ExtColours:
+    """The :class:`ExtColours` of ``palette`` (the default palette's for unknown names)."""
+    return EXT_COLOURS.get(palette.name, EXT_COLOURS[DEFAULT_PALETTE.name])
+
+
+#: Rescued survivor: ring radius / width (fractions of the cell) and the tick badge in the
+#: bottom-right corner (badge radius as a fraction of the cell, tick stroke, tick vertices in
+#: units of the badge diameter, centred).
+RESCUED_RING_RADIUS_FRAC: float = 0.45
+RESCUED_RING_WIDTH_FRAC: float = 0.08
+RESCUED_BADGE_RADIUS_FRAC: float = 0.2
+RESCUED_BADGE_MIN_RADIUS: int = 4
+RESCUED_TICK_POINTS: tuple[tuple[float, float], ...] = ((-0.28, 0.0), (-0.06, 0.24), (0.3, -0.24))
+RESCUED_TICK_WIDTH_FRAC: float = 0.05
+#: Target cell: dashed square (inset from the cell edge, stroke width, dash and gap as
+#: fractions of the cell) over a solid halo line, and a flag (pole height, pennant length
+#: and height, as fractions of the cell) in the top-right corner.
+TARGET_INSET_FRAC: float = 0.06
+TARGET_STROKE_FRAC: float = 0.07
+TARGET_DASH_FRAC: float = 0.22
+TARGET_GAP_FRAC: float = 0.12
+TARGET_HALO_EXTRA: int = 2
+TARGET_FLAG_POLE_FRAC: float = 0.4
+TARGET_FLAG_LEN_FRAC: float = 0.26
+TARGET_FLAG_HEIGHT_FRAC: float = 0.18
+TARGET_FLAG_INSET_FRAC: float = 0.12
+#: On cells smaller than TARGET_COMPACT_MAX_CELL px (e.g. 25 px on a 30x30 map) the target is
+#: drawn compact, so a survivor's cross under it stays readable: no flag, the square on the
+#: cell edge and a halo only TARGET_COMPACT_HALO_EXTRA px wider than the dashes.
+TARGET_COMPACT_MAX_CELL: int = 40
+TARGET_COMPACT_HALO_EXTRA: int = 1
+#: P(debris) shading of observed, believed-open cells (noisy sensing): a one-way hatch whose
+#: level follows log10 P between PROB_SHADE_MIN (no shade at or below) and PROB_SHADE_MAX
+#: (the darkest level), in PROB_SHADE_LEVELS steps. Log scale: a cell read OPEN once at
+#: ε = 0.1 sits near 0.01, twice near 0.001 - a linear scale would make both invisible.
+#: Higher levels are both more opaque (alpha) and denser (line spacing, as a fraction of the
+#: cell, from the first to the last level), so the levels differ in shape, not only in colour.
+PROB_SHADE_MIN: float = 1e-3
+PROB_SHADE_MAX: float = 0.5
+PROB_SHADE_LEVELS: int = 5
+PROB_HATCH_MIN_ALPHA: int = 90
+PROB_HATCH_MAX_ALPHA: int = 255
+PROB_HATCH_SPACING_MAX_FRAC: float = 0.34
+PROB_HATCH_SPACING_MIN_FRAC: float = 0.12
+PROB_HATCH_WIDTH_FRAC: float = 0.06
+#: Believed debris that may be a phantom (two-sided noise, --fp > 0): a DEBRIS cell of the
+#: belief whose P(debris) is below PHANTOM_CERTAIN_P (1: only a bump, or a DEBRIS reading
+#: without false positives, makes debris certain) is lightened by an open-coloured veil of
+#: alpha PHANTOM_VEIL_ALPHA and, on cells of at least UNKNOWN_CORNER_MIN_CELL px, gets a '?'
+#: badge in the top-right corner (side, font and inset as fractions of the cell).
+PHANTOM_CERTAIN_P: float = 1.0
+PHANTOM_VEIL_ALPHA: int = 110
+PHANTOM_BADGE_FRAC: float = 0.4
+PHANTOM_BADGE_FONT_FRAC: float = 0.36
+PHANTOM_BADGE_INSET_FRAC: float = 0.04
+#: Panel legend of the P(debris) shading: swatch size, gap, and the title.
+LEGEND_SWATCH_SIZE: int = 22
+LEGEND_SWATCH_GAP: int = 4
+PROB_LEGEND_TITLE: str = "P(debris) of seen-open cells"
+#: Window title of the extension simulator.
+EXT_SIM_CAPTION: str = "Rescue Robot - extension simulator"

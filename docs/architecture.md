@@ -109,7 +109,7 @@ The slide leaves out one detail: **the agent and the world never reference each 
 `runner.Mission` passes the action to `World.step` and the percept to `Agent.on_outcome`. The
 agents import only the `Percept` type from `world`. The planner sees the belief and the
 transition model, never the true map, so it cannot cheat. The baselines `astar_fixed` and
-`astar_replan` and the stretch agents `dstar_lite` and `vi_expected` fill the same agent box
+`astar_replan` and the stretch agents `dstar_lite`, `vi_expected` and `lao_expected` fill the same agent box
 with a different planner and executor (§7.2).
 
 ---
@@ -195,10 +195,11 @@ imports inside functions and excluding the `TYPE_CHECKING` blocks. No import poi
 | `planners/strong_cyclic_fixpoint.py` | Reference planner (Cimatti et al.), used for completeness tests and as the fallback. | `strong_cyclic_policy`, `winning_region` |
 | `planners/dstar_lite.py` | Stretch: incremental D\* Lite. | `DStarLite`, `DStarResult` |
 | `planners/value_iteration.py` | Stretch: the policy that minimises expected steps. | `ValueIterationPlanner`, `value_iteration`, `transition_tables`, `proper_region` |
+| `planners/lao_star.py` | Stretch (round 2): the same expected-steps optimum by LAO\* heuristic search from the robot's cell (plan §3.15.1). | `LaoStarPlanner`, `lao_star`, `LaoResult`, `heuristic`, `warm_up` |
 | `agents/base.py` | The common agent interface and the bookkeeping every agent shares: belief update, unplanned check (D10), replan counting (D12), snapshots. | `Agent`, `PathAgent`, `Observation`, `Abort`, `Decision`, `AgentStats`, `AgentUpdate`, `PlanSnapshot` |
 | `agents/contingency.py` | `andor`: follows the AND-OR plan and replans only on map surprises. | `ContingencyAgent` |
 | `agents/astar_fixed.py`, `agents/astar_replan.py` | The A\* baselines. | `FixedAStarAgent`, `ReplanAStarAgent` |
-| `agents/dstar_lite.py`, `agents/vi_expected.py` | The stretch agents (D19). | `DStarLiteAgent`, `ValueIterationAgent` |
+| `agents/dstar_lite.py`, `agents/vi_expected.py`, `agents/lao_expected.py` | The stretch agents (D19; `lao_expected` added in round 2). | `DStarLiteAgent`, `ValueIterationAgent`, `LaoExpectedAgent` |
 | `agents/__init__.py` | The agent registry. | `AGENTS`, `AGENT_NAMES`, `STRETCH_AGENT_NAMES`, `ALL_AGENT_NAMES`, `make_agent` |
 | `runner.py` | The mission loop, step events, metrics and the trace / summary text. | `Mission`, `run_mission`, `StepEvent`, `MissionStatus`, `MissionMetrics`, `make_transition`, `check_agent_transition`, `format_trace`, `format_summary`, `format_metrics_table` |
 | `runs.py` | JSON run files for replays. | `save_run`, `load_run`, `RunRecord`, `run_to_dict`, `event_to_dict`, `event_from_dict` |
@@ -210,6 +211,7 @@ imports inside functions and excluding the `TYPE_CHECKING` blocks. No import poi
 | `experiments/hypotheses.py` | The verdicts on the deck's claims, written to `HYPOTHESES.md`. | `Hypothesis`, `evaluate`, `write_hypotheses` |
 | `experiments/plots.py` | The result figures (matplotlib). | `make_all_plots`, `plot_*` |
 | `experiments/__main__.py` | `python -m rescue.experiments`: run, then summary, hypotheses and plots. | `main`, `console_summary` |
+| `experiments/lao_report.py` | `python -m rescue.experiments.lao_report results/lao`: the `LAO.md` analysis of the LAO\* run (plan §3.15.1). | `lao_report`, `write_lao_report`, `main` |
 
 **Front ends** (pygame; `viz/` is excluded from coverage):
 
@@ -221,6 +223,7 @@ imports inside functions and excluding the `TYPE_CHECKING` blocks. No import poi
 | `viz/tree_view.py` | The collapsible plan tree. | `TreeView` |
 | `viz/panel.py` | Side panel, event log, status badges, help overlay. | `Panel`, `PanelInfo`, `EventLog`, `draw_badge`, `draw_help_overlay` |
 | `viz/sim_app.py` | The interactive simulator and the frame loop it shares with replay. | `BaseApp`, `SimApp`, `SimOptions`, `event_messages`, `flash_cells`, `prepare_environment` |
+| `viz/ext_sim_app.py` | `sim --ext search\|multi\|noisy`: the extension missions in the simulator (round 2, plan §3.15.3; not in the browser build). | `ExtSimApp`, `ExtSimOptions`, `mode_settings`, `ext_event_messages`, `EXT_MODES` |
 | `viz/compare_app.py` | Head-to-head panes stepped in lock-step (D20). | `CompareApp`, `ComparePane`, `pane_event_line`, `outcome_rows` |
 | `viz/replay_app.py` | Scrubs through a saved run without re-simulating it. | `ReplayApp`, `load_replay` |
 | `viz/record.py` | GIF / MP4 recording. | `Recorder` |
@@ -231,12 +234,12 @@ coverage target):
 
 | Module | Responsibility | Key names |
 |---|---|---|
-| `ext/sensing.py` | False-negative debris sensor (one draw per grid cell per step) and the Bayes per-cell debris belief. | `NoisySensor`, `ProbBelief` |
+| `ext/sensing.py` | Noisy debris sensor (false negatives; optional false positives since round 2, plan §3.15.2; one draw per grid cell per step) and the Bayes per-cell debris belief. | `NoisySensor`, `ProbBelief` |
 | `ext/scenarios.py` | Core scenario maps with k − 1 extra survivors. | `multi_survivor_grid`, `add_survivors` |
 | `ext/agents.py` | Frontier exploration and greedy nearest-first rescue order, planning with AND-OR or A\*. | `SearchAgent`, `SearchAndOrAgent`, `SearchAStarAgent`, `EXT_AGENTS`, `make_ext_agent`, `frontier_mask` |
 | `ext/mission.py` | The extension mission loop (several survivors, noisy percepts), events, metrics, oracle tours. | `ExtMission`, `run_ext_mission`, `ExtStepEvent`, `ExtMetrics`, `oracle_tours`, `format_ext_trace` |
 | `ext/demo.py` | `python -m rescue.ext.demo --mode search\|multi\|noisy`. | `main`, `MODES` |
-| `ext/experiments.py`, `ext/claims.py`, `ext/plots.py` | `python -m rescue.ext.experiments`: tasks, runs, summary, claims X1–X5 (`EXTENSIONS.md`), plots. | `ExtBlock`, `expand_tasks`, `run_ext_experiments`, `write_summary`, `evaluate_claims`, `write_extensions`, `make_ext_plots` |
+| `ext/experiments.py`, `ext/claims.py`, `ext/plots.py` | `python -m rescue.ext.experiments`: tasks, runs, summary, claims X1–X6 (`EXTENSIONS.md`; X6 two-sided noise, plan §3.15.2), plots. | `ExtBlock`, `expand_tasks`, `run_ext_experiments`, `write_summary`, `evaluate_claims`, `write_extensions`, `make_ext_plots` |
 
 The extension package is the top layer. `ExtMission` mirrors `runner.Mission`: it drives the
 core `World` for motion, outcome draws and aftershocks, and passes every percept through a
@@ -251,7 +254,8 @@ every survivor. With default arguments these hooks leave the core bit-identical 
 Outside the package, `scripts/make_figures.py` regenerates the simulator figures in
 `docs/figures/` (the GIF, two screenshots and the plan tree; the comparison screenshot comes
 from the compare CLI, `docs/plan.md` §3.11). It drives `SimApp` headless through its public API
-(`tick`, `render`, `handle_key`, `step_once`).
+(`tick`, `render`, `handle_key`, `step_once`). `scripts/make_ext_figures.py` does the same for
+`ExtSimApp` and writes `docs/figures/ext_{search,multi,noisy}.png` (plan §3.15.3).
 
 ---
 

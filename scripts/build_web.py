@@ -9,10 +9,11 @@ Usage (from the repository root, with the dev venv and ``pip install -e ".[web]"
 Two steps:
 
 1. :func:`stage` copies what the browser app needs into the app folder (default
-   ``build/web_app/``): ``web/main.py``, the ``rescue`` package without the packages the
-   simulator never imports (:data:`EXCLUDED_PACKAGE_DIRS`) and without ``__pycache__``, the
-   maps (``maps/*.txt``) and two DejaVu fonts from matplotlib's ``mpl-data/fonts/ttf`` with their
-   licence (``fonts/``; ``theme.load_fonts`` prefers them, so plan labels keep their arrows).
+   ``build/web_app/``): ``web/main.py``, the ``rescue`` package without the packages and
+   modules the simulator never imports (:data:`EXCLUDED_PACKAGE_DIRS`,
+   :data:`EXCLUDED_MODULES`) and without ``__pycache__``, the maps (``maps/*.txt``) and two
+   DejaVu fonts from matplotlib's ``mpl-data/fonts/ttf`` with their licence (``fonts/``;
+   ``theme.load_fonts`` prefers them, so plan labels keep their arrows).
 2. :func:`run_pygbag` runs ``python -m pygbag --build <app folder>``, which packs the folder into
    ``<app folder>/build/web/`` (``index.html``, ``<name>.apk``, ``favicon.png``). pygbag
    downloads its page template from its CDN on the first build, so that step needs network
@@ -42,6 +43,9 @@ MAPS_DIR = REPO_ROOT / "maps"
 MAP_GLOB = "*.txt"
 #: Sub-packages of ``rescue`` the simulator never imports (experiment harness, extensions).
 EXCLUDED_PACKAGE_DIRS: tuple[str, ...] = ("experiments", "ext")
+#: Modules of ``rescue`` (paths relative to the package) left out because they import an
+#: excluded package: the extension simulator (``sim --ext``, plan §3.15.3) needs ``rescue.ext``.
+EXCLUDED_MODULES: tuple[str, ...] = ("viz/ext_sim_app.py",)
 #: Files and directories never copied.
 IGNORED_PATTERNS: tuple[str, ...] = ("__pycache__", "*.pyc", "*.pyo")
 #: Fonts copied from matplotlib's mpl-data/fonts/ttf (DejaVu: Bitstream Vera licence).
@@ -69,13 +73,16 @@ def matplotlib_fonts_dir() -> Path:
 
 def _ignore_for(root: Path) -> Callable[[str, list[str]], set[str]]:
     """copytree ignore callback: :data:`IGNORED_PATTERNS` everywhere, plus
-    :data:`EXCLUDED_PACKAGE_DIRS` directly under ``root``."""
+    :data:`EXCLUDED_PACKAGE_DIRS` directly under ``root`` and the :data:`EXCLUDED_MODULES`."""
     patterns = shutil.ignore_patterns(*IGNORED_PATTERNS)
 
     def ignore(directory: str, names: list[str]) -> set[str]:
         ignored = set(patterns(directory, names))
-        if Path(directory).resolve() == root.resolve():
+        here = Path(directory).resolve()
+        if here == root.resolve():
             ignored |= {n for n in names if n in EXCLUDED_PACKAGE_DIRS}
+        ignored |= {n for n in names
+                    if (here / n).relative_to(root.resolve()).as_posix() in EXCLUDED_MODULES}
         return ignored
 
     return ignore

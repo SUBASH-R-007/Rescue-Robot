@@ -4,9 +4,11 @@
 :class:`ExtMission` mirrors :class:`rescue.runner.Mission` but drives a
 :class:`~rescue.ext.agents.SearchAgent`. The core :class:`~rescue.world.World` simulates motion
 and aftershocks (so the outcome stream is the core's); every percept passes through a
-:class:`~rescue.ext.sensing.NoisySensor` (always, even with ``false_negative = 0``, so the noise
-draws line up across conditions); a bump's touched cell is exempt from the noise. When the
-robot stands on an unrescued survivor that survivor is rescued. The mission ends ``RESCUED``
+:class:`~rescue.ext.sensing.NoisySensor` (always, even without noise, so the noise draws line
+up across conditions); a bump's touched cell and the robot's own cell are exempt from the noise
+(both are known for certain: contact, and the cell the robot stands on), and both are passed to
+the agent's belief as certain (``SearchAgent.on_outcome(..., touched)``). When the robot stands
+on an unrescued survivor that survivor is rescued. The mission ends ``RESCUED``
 when all ``k`` survivors are rescued, ``BUDGET`` after ``world_config.step_budget(rows, cols)
 * k`` steps, or on an agent ``Abort``.
 """
@@ -97,7 +99,9 @@ class ExtStepEvent:
 class ExtMetrics:
     """Per-mission metrics of an extension mission (one row of ``results/ext/raw.csv``).
 
-    ``mode`` is the caller's block label (``search`` / ``multi`` / ``noisy`` or empty).
+    ``mode`` is the caller's block label (``search`` / ``multi`` / ``noisy`` / ``noisy_fp`` or
+    empty). ``false_positive`` is the sensor's false-positive rate and ``fallback_replans`` the
+    agent's :attr:`~rescue.ext.agents.SearchAgent.fallback_replans` (round 2, appended).
     ``first_detection_step`` is the step at which the first survivor was sensed (0 when the
     locations are known; NaN if none was ever found). ``oracle_path`` is the true-map shortest
     path start → survivor (k = 1; NaN otherwise); ``greedy_tour`` the true-map BFS length of
@@ -134,6 +138,8 @@ class ExtMetrics:
     optimal_tour: float
     blocked_moves: int = 0
     aftershock_events: int = 0
+    false_positive: float = 0.0
+    fallback_replans: int = 0
 
     def as_dict(self) -> dict[str, Any]:
         """Field name → value, in declaration order."""
@@ -181,16 +187,22 @@ class ExtMission:
 
     ``survivors_known`` pre-marks every survivor in the belief (the core setting); otherwise the
     belief starts all UNKNOWN and survivors are found by sensing. The belief is a
-    :class:`~rescue.belief.BeliefMap` when ``false_negative == 0`` and a
-    :class:`~rescue.ext.sensing.ProbBelief` (``prior_debris``, ``threshold``) otherwise;
-    ``prob_belief`` forces one or the other.
+    :class:`~rescue.belief.BeliefMap` when ``false_negative == 0`` and ``false_positive == 0``,
+    and a :class:`~rescue.ext.sensing.ProbBelief` (``prior_debris``, ``threshold``, both noise
+    rates) otherwise; ``prob_belief`` forces one or the other. With aftershocks enabled and
+    ``false_positive > 0`` the ``ProbBelief`` gets ``debris_floor = prior_debris``
+    (:attr:`debris_floor`): a DEBRIS reading of a cell believed free counts as much as one of a
+    never-seen cell, because an aftershock may have buried it since (see
+    :class:`~rescue.ext.sensing.ProbBelief`); otherwise the floor is 0 (the static-map filter).
 
     ``ValueError`` if the agent's dynamics differ from the world's (D5); if ``prior_debris >=
     threshold`` (every never-observed cell would count as impassable, so frontier search could
     never step into unknown territory and is no longer complete); or if ``prob_belief=False``
-    is combined with ``false_negative > 0`` (a :class:`~rescue.belief.BeliefMap` takes a noisy
-    OPEN reading at face value and can "un-see" known debris, which the termination argument of
-    :class:`~rescue.ext.agents.SearchAgent` excludes).
+    is combined with ``false_negative > 0`` or ``false_positive > 0`` (a
+    :class:`~rescue.belief.BeliefMap` takes a noisy reading at face value: it can "un-see" known
+    debris, which the termination argument of :class:`~rescue.ext.agents.SearchAgent` excludes,
+    or hold a phantom wall as certain). ``false_positive`` must be in ``[0,
+    EXT_MAX_FALSE_POSITIVE)``.
     """
 
     def __init__(
@@ -202,6 +214,7 @@ class ExtMission:
         *,
         survivors_known: bool = True,
         false_negative: float = 0.0,
+        false_positive: float = 0.0,
         prior_debris: float = EXT_PRIOR_DEBRIS,
         threshold: float = EXT_DEBRIS_THRESHOLD,
         scenario: str = "",
@@ -218,29 +231,35 @@ class ExtMission:
         self.seed = int(seed)
         self.survivors_known = bool(survivors_known)
         self.false_negative = float(false_negative)
+        self.false_positive = float(false_positive)
         self.prior_debris = float(prior_debris)
         self.threshold = float(threshold)
         self.scenario = scenario or grid.name
         self.mode = mode
-        self.prob_belief = (
-            self.false_negative > 0.0 if prob_belief is None else bool(prob_belief)
-        )
+        noisy = self.false_negative > 0.0 or self.false_positive > 0.0
+        self.prob_belief = noisy if prob_belief is None else bool(prob_belief)
         if self.prior_debris >= self.threshold:
             raise ValueError(
                 f"prior_debris ({self.prior_debris:g}) must be below threshold "
                 f"({self.threshold:g}): unknown cells must stay optimistically passable"
             )
-        if not self.prob_belief and self.false_negative > 0.0:
+        if not self.prob_belief and noisy:
             raise ValueError(
-                f"prob_belief=False needs false_negative = 0 (got {self.false_negative:g}): a "
-                "BeliefMap would let a noisy OPEN reading overwrite known debris"
+                f"prob_belief=False needs false_negative = 0 and false_positive = 0 (got "
+                f"{self.false_negative:g}, {self.false_positive:g}): a BeliefMap would take a "
+                "noisy reading at face value"
             )
+        #: Floor of the debris probability a DEBRIS reading starts from (ProbBelief only).
+        self.debris_floor: float = (
+            self.prior_debris
+            if self.world_config.aftershock.enabled and self.false_positive > 0.0 else 0.0
+        )
         self.k: int = len(self.grid.survivors)
         self.transition = make_transition(self.grid, self.world_config)
         check_agent_transition(agent, self.transition, self.grid.rows, self.grid.cols)
         self.budget: int = self.world_config.step_budget(self.grid.rows, self.grid.cols) * self.k
         self.sensor = NoisySensor(self.false_negative, self.seed, self.grid.rows,
-                                  self.grid.cols)
+                                  self.grid.cols, self.false_positive)
         self.events: list[ExtStepEvent] = []
         self.status: MissionStatus = MissionStatus.RUNNING
         self.rescued: list[Pos] = []
@@ -277,7 +296,7 @@ class ExtMission:
         belief: AnyBelief
         if self.prob_belief:
             belief = ProbBelief(rows, cols, primary, self.prior_debris, self.false_negative,
-                                self.threshold)
+                                self.threshold, self.false_positive, self.debris_floor)
             if self.survivors_known:
                 for s in self.grid.extra_survivors:
                     belief.mark_survivor(s)
@@ -308,7 +327,7 @@ class ExtMission:
                       seed=self.seed, aftershock=cfg.aftershock)
         self._world = world
         self.agent.reset_search(self.grid.start, self._make_belief(), self.k)
-        percept = self.sensor.observe(world.sense())
+        percept = self.sensor.observe(world.sense(), (world.pos,))
         update = self.agent.on_outcome(world.pos, percept)
         event = ExtStepEvent(
             t=world.t,
@@ -345,15 +364,15 @@ class ExtMission:
         result = world.step(decision)
         # D6: a bump is judged on the belief the agent held when it acted.
         bump = bool(result.hit_debris and agent.belief.get(result.target) is not Cell.DEBRIS)
-        exempt = (result.target,) if result.hit_debris else ()
-        percept = self.sensor.observe(result.percept, exempt)
+        touched = (result.target,) if result.hit_debris else ()
+        percept = self.sensor.observe(result.percept, (*touched, result.new_pos))
         rescued_now: Pos | None = None
         on = world.on_survivor
         if on is not None and on not in self.rescued:
             self.rescued.append(on)
             rescued_now = on
             agent.on_rescue(on)
-        update = agent.on_outcome(result.new_pos, percept)
+        update = agent.on_outcome(result.new_pos, percept, touched)
 
         if result.kind is OutcomeKind.SLIPPED:
             self._slips += 1
@@ -473,6 +492,8 @@ class ExtMission:
             optimal_tour=optimal,
             blocked_moves=self._blocked,
             aftershock_events=world.aftershock_events,
+            false_positive=self.false_positive,
+            fallback_replans=int(self.agent.fallback_replans),
         )
 
 

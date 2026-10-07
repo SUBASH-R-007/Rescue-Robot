@@ -1,16 +1,19 @@
 """Monte Carlo harness of the extensions: ``python -m rescue.ext.experiments`` (plan §3.14).
 
-Three blocks, defined in ``experiments/ext.yaml`` (full) and ``experiments/ext_quick.yaml``
+Four blocks, defined in ``experiments/ext.yaml`` (full) and ``experiments/ext_quick.yaml``
 (``--quick``):
 
 * ``search`` (brief §8.4) — survivor location known vs unknown, ``search_andor`` vs
   ``search_astar``;
 * ``multi`` (§8.5) — k ∈ {1, 2, 3, 4} known survivors; greedy vs optimal tour, steps per rescue;
-* ``noisy`` (§8.3) — debris false-negative rate ε ∈ {0, 0.05, 0.1, 0.2}.
+* ``noisy`` (§8.3) — debris false-negative rate ε ∈ {0, 0.05, 0.1, 0.2};
+* ``noisy_fp`` (round 2, plan §3.15.2) — false-positive rate ∈ {0, 0.05, 0.1, 0.2} at a
+  false-negative rate of 0.1 (two-sided noise).
 
 Seeding follows the core harness (:func:`rescue.experiments.spec.task_seed`): a task's seed
 depends only on ``(base_seed, scenario, rows, cols, replicate)``, so known vs unknown location,
-every k (the survivors for k are a prefix of those for k + 1), every noise level and every agent
+every k (the survivors for k are a prefix of those for k + 1), every noise level (both rates)
+and every agent
 replay the same base map, the same outcome stream and the same noise draws (the sensor draws
 one uniform per grid cell per step, so a given (step, cell) gets the same draw whatever path
 led there). The seed is the map seed, the World seed and the NoisySensor seed.
@@ -42,7 +45,14 @@ from typing import Any
 import numpy as np
 
 from rescue.cli_utils import ensure_utf8_stdout
-from rescue.config import MAPGEN_MIN_SIZE, MAX_SLIP_P, AgentConfig, PlannerConfig, load_yaml
+from rescue.config import (
+    EXT_MAX_FALSE_POSITIVE,
+    MAPGEN_MIN_SIZE,
+    MAX_SLIP_P,
+    AgentConfig,
+    PlannerConfig,
+    load_yaml,
+)
 from rescue.experiments.run import (
     BLAS_THREAD_LIMITS,
     META_FILE,
@@ -73,6 +83,7 @@ PLOTS_DIR: str = "plots"
 SEARCH_BLOCK: str = "search"
 MULTI_BLOCK: str = "multi"
 NOISY_BLOCK: str = "noisy"
+NOISY_FP_BLOCK: str = "noisy_fp"
 #: Scenario label of the pooled summary rows.
 ALL_SCENARIOS: str = "all"
 
@@ -89,10 +100,15 @@ METRIC_COLUMNS: tuple[str, ...] = (
 )
 #: Planning calls (initial plan included) and mission wall time.
 EXTRA_COLUMNS: tuple[str, ...] = ("plans_made", "elapsed_ms")
+#: Round-2 columns (plan §3.15.2), *appended* so every round-1 column keeps its position: the
+#: sensor's false-positive rate (a task factor) and the agent's fallback count.
+ROUND2_COLUMNS: tuple[str, ...] = ("false_positive", "fallback_replans")
+#: Values of the round-2 columns in a ``raw.csv`` written before they existed.
+ROUND2_DEFAULTS: dict[str, Any] = {"false_positive": 0.0, "fallback_replans": 0}
 #: Fixed column order of ``raw.csv``.
-RAW_COLUMNS: tuple[str, ...] = TASK_COLUMNS + METRIC_COLUMNS + EXTRA_COLUMNS
+RAW_COLUMNS: tuple[str, ...] = TASK_COLUMNS + METRIC_COLUMNS + EXTRA_COLUMNS + ROUND2_COLUMNS
 #: Columns identifying one task (map + condition); paired comparisons of agents join on them.
-EXT_TASK_KEYS: tuple[str, ...] = TASK_COLUMNS
+EXT_TASK_KEYS: tuple[str, ...] = (*TASK_COLUMNS, "false_positive")
 #: Columns identifying one base map (and its outcome / noise streams) inside a block: the unit
 #: of analysis of paired comparisons pooled over conditions.
 EXT_MAP_KEYS: tuple[str, ...] = ("experiment", "scenario", "rows", "cols", "replicate", "seed")
@@ -105,7 +121,7 @@ _BOOL_COLUMNS = frozenset({"success", "survivors_known"})
 _INT_COLUMNS = frozenset({
     "rows", "cols", "k", "replicate", "seed", "steps", "rescued", "cells_explored", "replans",
     "slips", "skids", "bumps", "blocked_moves", "unplanned_states", "nodes_expanded",
-    "plans_made",
+    "plans_made", "fallback_replans",
 })
 _TRUE_TEXT = frozenset({"true", "1", "yes"})
 _FALSE_TEXT = frozenset({"false", "0", "no"})
@@ -114,7 +130,7 @@ _CONFIG_KEYS = frozenset({"name", "base_seed", "n_maps", "agents", "blocks", "wo
 _REQUIRED_CONFIG_KEYS = frozenset({"name", "base_seed", "n_maps", "agents", "blocks"})
 _BLOCK_KEYS = frozenset({
     "name", "scenarios", "sizes", "slip_p", "survivors_known", "k", "false_negative",
-    "agents", "n_maps",
+    "false_positive", "agents", "n_maps",
 })
 _REQUIRED_BLOCK_KEYS = frozenset({"name", "scenarios", "sizes", "slip_p"})
 
@@ -122,7 +138,8 @@ _REQUIRED_BLOCK_KEYS = frozenset({"name", "scenarios", "sizes", "slip_p"})
 # --- specification ---------------------------------------------------------------------------
 @dataclass(frozen=True)
 class ExtBlock:
-    """One factorial block: scenarios × sizes × slip p × k × location known × ε × replicates.
+    """One factorial block: scenarios × sizes × slip p × k × location known × ε (false
+    negatives) × false positives × replicates.
 
     ``agents`` / ``n_maps`` of ``None`` inherit the config's values.
     """
@@ -136,6 +153,7 @@ class ExtBlock:
     false_negative: tuple[float, ...] = (0.0,)
     agents: tuple[str, ...] | None = None
     n_maps: int | None = None
+    false_positive: tuple[float, ...] = (0.0,)
 
     def __post_init__(self) -> None:
         _validate_block(self)
@@ -175,7 +193,8 @@ class ExtConfig:
 
 @dataclass(frozen=True)
 class ExtTask:
-    """One base map under one condition; :func:`run_task` runs every agent on it."""
+    """One base map under one condition; :func:`run_task` runs every agent on it
+    (``false_positive`` last, with a default, so round-1 constructions keep working)."""
 
     experiment: str
     scenario: str
@@ -188,6 +207,7 @@ class ExtTask:
     replicate: int
     seed: int
     agents: tuple[str, ...]
+    false_positive: float = 0.0
 
 
 def _unique(label: str, values: tuple[Any, ...]) -> None:
@@ -237,6 +257,10 @@ def _validate_block(block: ExtBlock) -> None:
     if any(not 0.0 <= e <= 1.0 for e in block.false_negative):
         raise ValueError(f"{where}: false_negative must be in [0, 1], got "
                          f"{block.false_negative}")
+    _unique(f"{where} false_positive", block.false_positive)
+    if any(not 0.0 <= e < EXT_MAX_FALSE_POSITIVE for e in block.false_positive):
+        raise ValueError(f"{where}: false_positive must be in [0, {EXT_MAX_FALSE_POSITIVE:g}), "
+                         f"got {block.false_positive}")
     if block.agents is not None:
         _check_agents(f"{where} agents", block.agents)
     if block.n_maps is not None:
@@ -278,7 +302,9 @@ def _mapping(label: str, data: Any, allowed: frozenset[str],
 
 
 #: Optional block factors: YAML key → element type.
-_FACTOR_TYPES: dict[str, type] = {"survivors_known": bool, "k": int, "false_negative": float}
+_FACTOR_TYPES: dict[str, type] = {
+    "survivors_known": bool, "k": int, "false_negative": float, "false_positive": float,
+}
 
 
 def block_from_dict(data: dict[str, Any]) -> ExtBlock:
@@ -336,8 +362,10 @@ def resolve_path(path: str | Path) -> Path:
 
 def expand_tasks(cfg: ExtConfig) -> list[ExtTask]:
     """Every task of ``cfg`` in a deterministic order: block, scenario, size, slip p, k,
-    location known, ε (each as listed), replicate. ``raw.csv`` follows this order, then the
-    block's agents in config order. Seeds: :func:`rescue.experiments.spec.task_seed`."""
+    location known, ε, false-positive rate (each as listed), replicate (a block with the
+    default single false-positive rate 0 gives exactly the round-1 order). ``raw.csv`` follows
+    this order, then the block's agents in config order. Seeds:
+    :func:`rescue.experiments.spec.task_seed`."""
     tasks: list[ExtTask] = []
     for block in cfg.blocks:
         agents = cfg.block_agents(block)
@@ -349,11 +377,12 @@ def expand_tasks(cfg: ExtConfig) -> list[ExtTask]:
                     for k in block.k:
                         for known in block.survivors_known:
                             for eps in block.false_negative:
-                                tasks.extend(
-                                    ExtTask(block.name, scenario, size, size, p, k, known, eps,
-                                            replicate, seed, agents)
-                                    for replicate, seed in enumerate(seeds)
-                                )
+                                for fp in block.false_positive:
+                                    tasks.extend(
+                                        ExtTask(block.name, scenario, size, size, p, k, known,
+                                                eps, replicate, seed, agents, fp)
+                                        for replicate, seed in enumerate(seeds)
+                                    )
     return tasks
 
 
@@ -394,7 +423,7 @@ def run_task(task: ExtTask) -> list[dict[str, Any]]:
     Map: :func:`rescue.ext.scenarios.multi_survivor_grid` (the core map for k = 1). World:
     ``WorldConfig(slip_p)`` with the core defaults (sensor radius, no aftershocks). Each row =
     the task fields + the ``ExtMetrics`` columns (``failure_reason`` '' on success) +
-    ``plans_made`` + ``elapsed_ms``.
+    ``plans_made`` + ``elapsed_ms`` + the round-2 columns.
     """
     from rescue.config import WorldConfig
     from rescue.ext.agents import make_ext_agent
@@ -413,7 +442,7 @@ def run_task(task: ExtTask) -> list[dict[str, Any]]:
         mission = run_ext_mission(
             grid, agent, world_cfg, task.seed,
             survivors_known=task.survivors_known, false_negative=task.false_negative,
-            scenario=task.scenario, mode=task.experiment,
+            false_positive=task.false_positive, scenario=task.scenario, mode=task.experiment,
         )
         elapsed_ms = (time.perf_counter() - t0) * 1000.0
         metrics = mission.metrics().as_dict()
@@ -423,6 +452,8 @@ def run_task(task: ExtTask) -> list[dict[str, Any]]:
         row["failure_reason"] = row["failure_reason"] or ""
         row["plans_made"] = int(agent.stats.plans_made)
         row["elapsed_ms"] = elapsed_ms
+        row["false_positive"] = task.false_positive
+        row["fallback_replans"] = int(metrics["fallback_replans"])
         rows.append(row)
     return rows
 
@@ -528,9 +559,14 @@ def _parse(column: str, text: str) -> Any:
 
 
 def read_raw(path: str | Path) -> list[dict[str, Any]]:
-    """``raw.csv`` back as typed rows (bools, ints, floats with NaN, strings)."""
+    """``raw.csv`` back as typed rows (bools, ints, floats with NaN, strings); a file written
+    before round 2 gets the round-2 columns' defaults (:data:`ROUND2_DEFAULTS`)."""
     with Path(path).open(newline="", encoding="utf-8") as fh:
-        return [{c: _parse(c, t) for c, t in row.items()} for row in csv.DictReader(fh)]
+        rows = [{c: _parse(c, t) for c, t in row.items()} for row in csv.DictReader(fh)]
+    for row in rows:
+        for column, default in ROUND2_DEFAULTS.items():
+            row.setdefault(column, default)
+    return rows
 
 
 def run_ext_experiments(
@@ -622,21 +658,30 @@ def tour_ratio(row: dict[str, Any]) -> float:
 
 #: Summary grouping (one row per condition and agent; ``scenario = 'all'`` pools scenarios).
 GROUP_KEYS: tuple[str, ...] = (
-    "experiment", "scenario", "rows", "slip_p", "k", "survivors_known", "false_negative", "agent",
+    "experiment", "scenario", "rows", "slip_p", "k", "survivors_known", "false_negative",
+    "false_positive", "agent",
 )
 #: Metrics summarised as mean / lo / hi; the first two over successful missions only.
 SUCCESS_ONLY: tuple[str, ...] = ("steps", "steps_per_rescue")
 SUMMARY_METRICS: tuple[str, ...] = (
     "steps", "steps_per_rescue", "rescued", "first_detection_step", "cells_explored", "replans",
     "slips", "skids", "bumps", "blocked_moves", "unplanned_states", "planning_ms",
-    "nodes_expanded", "greedy_tour", "optimal_tour", "tour_ratio",
+    "nodes_expanded", "greedy_tour", "optimal_tour", "tour_ratio", "fallback_replans",
 )
 #: Failure reasons counted per summary row.
 FAILURE_REASONS: tuple[str, ...] = ("aborted", "budget", "unreachable")
+#: Round-2 group key and metric (plan §3.15.2): written after every round-1 summary column, so
+#: each round-1 column keeps its position (as in ``raw.csv``).
+_ROUND2_GROUP_KEYS: tuple[str, ...] = ("false_positive",)
+_ROUND2_METRICS: tuple[str, ...] = ("fallback_replans",)
+_STATS: tuple[str, ...] = ("mean", "lo", "hi")
 SUMMARY_COLUMNS: tuple[str, ...] = (
-    *GROUP_KEYS, "n", "successes", "success_rate", "success_lo", "success_hi", "missions_bumped",
+    *(g for g in GROUP_KEYS if g not in _ROUND2_GROUP_KEYS),
+    "n", "successes", "success_rate", "success_lo", "success_hi", "missions_bumped",
     *(f"n_{r}" for r in FAILURE_REASONS),
-    *(f"{m}_{s}" for m in SUMMARY_METRICS for s in ("mean", "lo", "hi")),
+    *(f"{m}_{s}" for m in SUMMARY_METRICS if m not in _ROUND2_METRICS for s in _STATS),
+    *_ROUND2_GROUP_KEYS,
+    *(f"{m}_{s}" for m in _ROUND2_METRICS for s in _STATS),
 )
 _FLOAT_FORMAT: str = ".6g"
 
@@ -699,7 +744,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="python -m rescue.ext.experiments",
         description="Extension experiments (unknown survivor location, several survivors, noisy "
-        "sensing); writes raw.csv, summary.csv, EXTENSIONS.md and plots.",
+        "sensing with false negatives and false positives); writes raw.csv, summary.csv, "
+        "EXTENSIONS.md and plots.",
     )
     which = parser.add_mutually_exclusive_group()
     which.add_argument("--config", metavar="PATH", default=None,
@@ -772,7 +818,9 @@ __all__ = [
     "EXT_TASK_KEYS",
     "MULTI_BLOCK",
     "NOISY_BLOCK",
+    "NOISY_FP_BLOCK",
     "RAW_COLUMNS",
+    "ROUND2_COLUMNS",
     "SEARCH_BLOCK",
     "SUMMARY_COLUMNS",
     "ExtBlock",

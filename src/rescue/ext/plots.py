@@ -5,7 +5,9 @@
   first, so the map is the unit of the Student-t 95 % CI);
 * ``multi_tours.png`` — greedy / optimal true-map tour ratio vs k (one value per map) and steps
   per rescue vs k (successful missions; the optimal tour per survivor as a reference);
-* ``noisy.png`` — bumps per mission and success % vs the false-negative rate ε.
+* ``noisy.png`` — bumps per mission and success % vs the false-negative rate ε;
+* ``noisy_fp.png`` (round 2) — success %, bumps per mission, steps (successful missions) and
+  fallback re-plans per mission vs the false-positive rate (two-sided noise).
 
 Drawn with the core harness's style and helpers (:mod:`rescue.experiments.plots`: header band,
 legend, dodged CI bars, colours). The extension agents borrow the colour and marker of their
@@ -28,6 +30,7 @@ from rescue.ext.experiments import (
     EXT_MAP_KEYS,
     MULTI_BLOCK,
     NOISY_BLOCK,
+    NOISY_FP_BLOCK,
     SEARCH_BLOCK,
     steps_per_rescue,
     tour_ratio,
@@ -47,12 +50,14 @@ EXT_AGENT_ORDER: tuple[str, ...] = tuple(EXT_STYLE_SOURCE)
 SEARCH_FILE: str = "search_steps.png"
 MULTI_FILE: str = "multi_tours.png"
 NOISY_FILE: str = "noisy.png"
+NOISY_FP_FILE: str = "noisy_fp.png"
 #: Location labels of the search figure (x axis order).
 LOCATION_LABELS: tuple[str, str] = ("known", "unknown")
 #: Dash pattern of the reference lines (tour-ratio limit, optimal tour per survivor).
 REFERENCE_DASH: tuple[int, tuple[float, float]] = (0, (3.0, 2.0))
 
-__all__ = ["make_ext_plots", "plot_multi_tours", "plot_noisy", "plot_search_steps"]
+__all__ = ["make_ext_plots", "plot_multi_tours", "plot_noisy", "plot_noisy_fp",
+           "plot_search_steps"]
 
 
 @contextmanager
@@ -270,6 +275,55 @@ def plot_noisy(rows: Sequence[Row], out_dir: Path) -> Path | None:
                             "false-negative rate ε", None, out_dir / NOISY_FILE)
 
 
+def plot_noisy_fp(rows: Sequence[Row], out_dir: Path) -> Path | None:
+    """Success %, bumps, steps and fallback re-plans vs the false-positive rate (round 2)."""
+    block = _block(rows, NOISY_FP_BLOCK)
+    if not block:
+        return None
+    fps = core._distinct(block, "false_positive")
+    fns = core._distinct(block, "false_negative")
+    with _ext_styles():
+        agents = _agents(block)
+        fig, axes = core._new_figure(4, sharey=False)
+        ax_success, ax_bumps, ax_steps, ax_fallback = axes
+        success = core._success_points(block, "false_positive")
+        bumps = core._mean_points(block, "false_positive", "bumps", successful_only=False)
+        steps = core._mean_points(block, "false_positive", "steps", successful_only=True)
+        fallback = core._mean_points(block, "false_positive", "fallback_replans",
+                                     successful_only=False)
+        order = _draw_order(agents)
+        drawn = core._merge([core._draw_agents(ax_success, success, order, fps),
+                             core._draw_agents(ax_bumps, bumps, order, fps),
+                             core._draw_agents(ax_steps, steps, order, fps),
+                             core._draw_agents(ax_fallback, fallback, order, fps)])
+        core._percent_axis(ax_success)
+        for ax in (ax_bumps, ax_steps, ax_fallback):
+            core._zero_floor(ax)
+        panels = (
+            (ax_success, "rescue success", core.SUCCESS_LABEL),
+            (ax_bumps, "collisions (unexpected debris)", "bumps per mission"),
+            (ax_steps, "steps (successful missions)", "steps per mission"),
+            (ax_fallback, "fallback to relaxed passability", "fallbacks per mission"),
+        )
+        for ax, title, ylabel in panels:
+            ax.set_title(title, color=core.TEXT_COLOUR, fontsize=core.PANEL_TITLE_SIZE,
+                         loc="left")
+            ax.set_ylabel(ylabel, color=core.TEXT_COLOUR, fontsize=core.LABEL_SIZE)
+        counts = [p.n for points in success.values() for p in points]
+        subtitle = (f"{core._n_text(counts, 'missions per agent and point')}; success: "
+                    f"{core.SUCCESS_CI_TEXT}; other panels: {core.MEAN_CI_TEXT} (steps over "
+                    "successful missions); the sensor misses a debris cell with probability "
+                    f"ε{core.EQ}{core._fmt_set(fns)} and reports a free cell as debris with "
+                    "probability ε_fp; a fallback = no reachable target under the debris "
+                    "threshold, so the target and plan were recomputed with only near-certain "
+                    "debris blocking (one per episode, re-entries while relaxed not counted); "
+                    "survivor location known; "
+                    f"{core._scope_text(block)}; {_fixed_text(block)}")
+        return core._finish(fig, axes, "Two-sided noisy sensing (false positives)", subtitle,
+                            [a for a in agents if a in drawn.agents],
+                            "false-positive rate ε_fp", None, out_dir / NOISY_FP_FILE)
+
+
 def make_ext_plots(rows: Sequence[Row], out_dir: str | Path) -> list[Path]:
     """Write every extension figure the rows support; return the paths written.
 
@@ -281,5 +335,5 @@ def make_ext_plots(rows: Sequence[Row], out_dir: str | Path) -> list[Path]:
         return []
     target = core.plots_dir(out_dir)
     paths = [plot_search_steps(rows, target), plot_multi_tours(rows, target),
-             plot_noisy(rows, target)]
+             plot_noisy(rows, target), plot_noisy_fp(rows, target)]
     return [p for p in paths if p is not None]

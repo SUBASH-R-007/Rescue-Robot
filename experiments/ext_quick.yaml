@@ -32,3 +32,15 @@ blocks:
     slip_p: [0.2]
     survivors_known: [true]
     false_negative: [0.0, 0.05, 0.1, 0.2]
+
+  # Round 2 (plan §3.15.2): two-sided noise, false-positive rate at a fixed false-negative
+  # rate of 0.1 (known survivor location). fp = 0 replays the noisy block's eps = 0.1 runs.
+  - name: noisy_fp
+    scenarios: [random_rubble, collapsed_building, flooded_zone, maze_corridors]
+    sizes: [10]
+    slip_p: [0.2]
+    survivors_known: [true]
+    false_negative: [0.1]
+    false_positive: [0.0, 0.05, 0.1, 0.2]
+    agents: [search_andor, search_astar]
+    n_maps: 10

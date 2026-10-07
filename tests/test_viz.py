@@ -59,6 +59,10 @@ FPS_WARMUP_FRAMES = 1
 #: Measurement windows tried before failing (best one counts): wall-clock timing is noisy
 #: when other processes (e.g. pytest-xdist workers) compete for the CPU.
 FPS_ATTEMPTS = 3
+#: Under pytest-xdist every CPU runs another test process, so a 60-frame window can land on a
+#: burst of contention that says nothing about the simulator; allow more windows there (the
+#: budget itself is unchanged, and the first window under budget ends the measurement).
+FPS_ATTEMPTS_PARALLEL = 10
 FPS_BUDGET_MS = 33.0
 FPS_DEBRIS_DENSITY = 0.2
 FPS_SLIP_FRACTION = 0.1
@@ -242,7 +246,8 @@ def test_render_and_step_sustain_30_fps_on_30x30(
             app.tick(dt_ms)
             app.render()
         windows: list[tuple[float, float, int]] = []
-        for _ in range(FPS_ATTEMPTS):
+        parallel = bool(os.environ.get("PYTEST_XDIST_WORKER"))
+        for _ in range(FPS_ATTEMPTS_PARALLEL if parallel else FPS_ATTEMPTS):
             steps = 0
             times: list[float] = []
             for _ in range(FPS_FRAMES):

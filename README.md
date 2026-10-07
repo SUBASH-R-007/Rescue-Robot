@@ -65,13 +65,15 @@ assumption and step budget (`4·R·C`).
 | `astar_replan` | A\* + replan | Replans whenever the outcome deviates from the path or the map is contradicted. |
 | `dstar_lite` (stretch) | D\* Lite | Incremental replanning (Koenig & Likhachev 2002), same triggers as `astar_replan`. |
 | `vi_expected` (stretch) | Expected-steps optimal | Value iteration with the true outcome probabilities, same triggers as `andor`. |
+| `lao_expected` (stretch) | Expected-steps optimal, by heuristic search | LAO\* from the robot's cell: the same optimum as `vi_expected`, same triggers as `andor` (plan §3.15.1). |
 
 **The simulation suite.**
 
 - **Interactive simulator** (`rescue.sim`): fog of war, true-map overlay, policy arrows, executed
   trace coloured by outcome, collapsible plan tree, live metrics, event log, map editor and
-  GIF/MP4 recording.
-- **Head-to-head comparison** (`rescue.compare`): two to five agents on the same map with the
+  GIF/MP4 recording. `--ext search|multi|noisy` plays the extension missions (unknown or
+  several survivors, noisy sensing) in the same window.
+- **Head-to-head comparison** (`rescue.compare`): two to six agents on the same map with the
   same outcome stream (common random numbers), advancing in lock-step.
 - **Scenario library** (`rescue.mapgen`): `random_rubble`, `collapsed_building`, `flooded_zone`
   and `maze_corridors` generators, each guaranteeing a reachable survivor, plus the
@@ -400,12 +402,15 @@ behaves bit-identically ("rule zero", [`docs/plan.md`](docs/plan.md) §3.14).
   optimal tour.
 - **Noisy sensing (§8.3).** The sensor misses debris with probability ε (false negatives only),
   and the robot keeps a **Bayesian per-cell debris probability**. Collisions become possible.
+  Round 2 adds an optional false-positive rate ε_fp (two-sided noise, claim X6, plan §3.15.2;
+  default 0, which leaves the round-1 missions unchanged).
 
 Each extension runs with an AND-OR planner (`search_andor`) or with A\* + replan
 (`search_astar`):
 
 ```bash
 python -m rescue.ext.demo --mode search     # one mission, printed; also --mode multi, --mode noisy
+python -m rescue.sim --ext search           # the same mission in the simulator (X cycles the modes)
 python -m rescue.ext.experiments --quick    # smoke run (10×10), writes results/ext/quick/ (not committed)
 python -m rescue.ext.experiments            # full run (experiments/ext.yaml), writes results/ext/
 ```
@@ -492,6 +497,7 @@ Rescue-Robot/
 │   ├── web.md              browser demo (pygbag): build, serve, publish, limitations
 │   └── figures/            GIF and screenshots
 ├── scripts/make_figures.py regenerates the simulator figures in docs/figures/
+├── scripts/make_ext_figures.py  the extension-simulator figures (docs/figures/ext_*.png)
 ├── scripts/build_web.py    stages build/web_app/ and builds the browser demo with pygbag
 ├── web/main.py             browser entry point (asyncio loop of the simulator)
 ├── CLAUDE.md               contributor conventions and commands
@@ -585,8 +591,8 @@ From [`docs/results.md`](docs/results.md) §5 and the project scope:
   machine with 18 worker processes; ratios between agents are more reliable than absolute values.
 - **Statistics:** no multiplicity correction; several analyses are post hoc, and H7 was added
   after an earlier full run had shown H3's gap at p = 0.
-- **Not implemented:** LAO\* or terrain-aware AND-OR costs and maps larger than 30×30 in the
-  experiments. The harness does not record AND-OR rollbacks. The browser build cannot record,
+- **Not implemented:** terrain-aware AND-OR costs and maps larger than 30×30 in the experiments
+  (LAO\* is implemented, as the stretch agent `lao_expected`: plan §3.15.1). The harness does not record AND-OR rollbacks. The browser build cannot record,
   offers only the map files with `M` (no scipy, so no generators), and has mouse offsets at
   fractional device-pixel ratios ([`docs/web.md`](docs/web.md)). The extensions (unknown survivor location, multiple survivors, noisy sensing) have
   their own limitations: false negatives only, no belief-space (POMDP) planning, a known survivor

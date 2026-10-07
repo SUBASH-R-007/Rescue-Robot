@@ -71,8 +71,9 @@ def test_full_and_quick_configs_parse() -> None:
     full = load_ext_config(REPO / "experiments" / "ext.yaml")
     quick = load_ext_config(REPO / "experiments" / "ext_quick.yaml")
     for cfg in (full, quick):
-        assert [b.name for b in cfg.blocks] == ["search", "multi", "noisy"]
-        search, multi, noisy = cfg.blocks
+        # Round 2 appended the noisy_fp block (tests/test_ext_fp.py checks it).
+        assert [b.name for b in cfg.blocks] == ["search", "multi", "noisy", "noisy_fp"]
+        search, multi, noisy = cfg.blocks[:3]
         assert list(search.scenarios) == SCENARIOS
         assert search.slip_p == (0.1, 0.3) and search.survivors_known == (True, False)
         assert cfg.block_agents(search) == ("search_andor", "search_astar")
@@ -83,8 +84,8 @@ def test_full_and_quick_configs_parse() -> None:
     assert full.blocks[0].sizes == (15,) and quick.blocks[0].sizes == (10,)
     assert full.block_n_maps(full.blocks[0]) == 200 and full.block_n_maps(full.blocks[1]) == 100
     assert all(quick.block_n_maps(b) == 10 for b in quick.blocks)
-    assert len(expand_tasks(full)) == 4 * 2 * 2 * 200 + 4 * 4 * 100 + 4 * 4 * 200
-    assert len(expand_tasks(quick)) == 4 * 2 * 2 * 10 + 4 * 4 * 10 + 4 * 4 * 10
+    assert len(expand_tasks(full)) == 4 * 2 * 2 * 200 + 4 * 4 * 100 + 4 * 4 * 200 + 4 * 4 * 200
+    assert len(expand_tasks(quick)) == 4 * 2 * 2 * 10 + 4 * 4 * 10 + 4 * 4 * 10 + 4 * 4 * 10
 
 
 @pytest.mark.parametrize(
@@ -133,12 +134,15 @@ def test_seeds_are_paired_across_factors_and_blocks() -> None:
     assert all(len(seeds) == 1 for seeds in by_map.values())
     for block in cfg.blocks:
         own = [t for t in tasks if t.experiment == block.name]
-        conditions = {(t.slip_p, t.k, t.survivors_known, t.false_negative) for t in own}
+        conditions = {(t.slip_p, t.k, t.survivors_known, t.false_negative, t.false_positive)
+                      for t in own}
         assert len(conditions) == (len(block.slip_p) * len(block.k)
-                                   * len(block.survivors_known) * len(block.false_negative))
+                                   * len(block.survivors_known) * len(block.false_negative)
+                                   * len(block.false_positive))
         for cond in conditions:
             seeds = [t.seed for t in own
-                     if (t.slip_p, t.k, t.survivors_known, t.false_negative) == cond]
+                     if (t.slip_p, t.k, t.survivors_known, t.false_negative,
+                         t.false_positive) == cond]
             assert len(seeds) == len(set(seeds)) == len(block.scenarios) * cfg.block_n_maps(block)
 
 
@@ -246,7 +250,7 @@ def test_max_tasks_samples_whole_maps() -> None:
         assert len(sample) <= max(limit, max(full.values()))
         assert sample == [t for t in tasks if t in sample]  # order kept
     sample = experiments.subsample_maps(tasks, 200)
-    assert {t.experiment for t in sample} == {"search", "multi", "noisy"}
+    assert {t.experiment for t in sample} == {"search", "multi", "noisy", "noisy_fp"}
     assert len(per_map(sample)) == len(per_map(experiments.subsample_maps(tasks, 200)))
     assert experiments.subsample_maps(tasks, None) == tasks
     with pytest.raises(ValueError, match="max_tasks"):
@@ -308,7 +312,7 @@ def _row(**fields: Any) -> dict[str, Any]:
         "slip_p": 0.1, "k": 1, "survivors_known": True, "false_negative": 0.0, "replicate": 0,
         "seed": 1, "agent": "search_andor", "success": True, "failure_reason": "", "steps": 10,
         "rescued": 1, "first_detection_step": 0.0, "bumps": 0, "unplanned_states": 0,
-        "greedy_tour": 10.0, "optimal_tour": 10.0,
+        "greedy_tour": 10.0, "optimal_tour": 10.0, "false_positive": 0.0, "fallback_replans": 0,
     }
     base.update(fields)
     return base

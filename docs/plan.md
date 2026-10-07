@@ -41,6 +41,7 @@ src/rescue/
     strong_cyclic_fixpoint.py   reference planner (Cimatti et al. 2003)
     dstar_lite.py        [stretch] D* Lite
     value_iteration.py   [stretch] expected-cost optimal policy
+    lao_star.py          [stretch, round 2] LAO* heuristic search, same optimum (§3.15.1)
   agents/
     __init__.py          AGENTS registry, AGENT_NAMES / STRETCH_AGENT_NAMES / ALL_AGENT_NAMES,
                          make_agent(name, ...)
@@ -50,6 +51,7 @@ src/rescue/
     astar_replan.py      ReplanAStarAgent  (id "astar_replan")
     dstar_lite.py        DStarLiteAgent      (id "dstar_lite", stretch, §3.12)
     vi_expected.py       ValueIterationAgent (id "vi_expected", stretch, §3.12)
+    lao_expected.py      LaoExpectedAgent    (id "lao_expected", stretch, §3.15.1)
   runner.py              Mission, StepEvent, MissionStatus, MissionMetrics, run_mission,
                          format_trace, format_summary, make_transition
   runs.py                save_run / load_run (JSON replay files)
@@ -59,32 +61,40 @@ src/rescue/
   sim.py compare.py replay.py   thin CLI entry points → viz apps
   viz/  __init__.py theme.py grid_view.py tree_view.py panel.py sim_app.py compare_app.py
         replay_app.py record.py export.py (plan-tree PNG via matplotlib)          (§3.11)
+        ext_sim_app.py (extension missions in the simulator, `sim --ext`)        (§3.15.3)
   experiments/ __init__.py __main__.py spec.py run.py stats.py hypotheses.py plots.py (§3.13)
+               lao_report.py (LAO.md of the LAO* run, §3.15.1)
   ext/  __init__.py sensing.py scenarios.py agents.py mission.py demo.py experiments.py
         claims.py plots.py   optional extensions, brief §8.3–§8.5                      (§3.14)
 scripts/make_figures.py  regenerates the simulator figures in docs/figures/ headless (§3.11)
-scripts/build_web.py     stages build/web_app/ (main.py, rescue/ without experiments/ ext/, maps,
+scripts/make_ext_figures.py  docs/figures/ext_{search,multi,noisy}.png (extension sim, §3.15.3)
+scripts/build_web.py     stages build/web_app/ (main.py, rescue/ without experiments/ ext/ and
+                         viz/ext_sim_app.py, maps,
                          DejaVu fonts + licence) and runs pygbag --build (brief §6.7, docs/web.md)
 web/main.py              pygbag entry point: asyncio.run(main()) → SimApp(...).run_async()
 build/                   web_app/ staging folder and pygbag output build/web/ *(ignored)*
 maps/   deck_demo.txt deck_figure.txt (the deck's maps) + mapgen samples rubble_01.txt
         building_01.txt flooded_01.txt maze_01.txt (each header = the command that regenerates it)
 experiments/ main.yaml (full run) quick.yaml (--quick) ext.yaml ext_quick.yaml (§3.14)
+             lao.yaml (LAO* scaling; run with --out results/lao, §3.15.1)
 results/ raw.csv summary.csv HYPOTHESES.md run_meta.json plots/*.png   committed full run (§3.13)
          quick/                                                        --quick output (ignored)
          ext/ raw.csv summary.csv EXTENSIONS.md run_meta.json plots/*.png  extensions (§3.14);
               ext/quick/ ignored
+         lao/ raw.csv summary.csv HYPOTHESES.md LAO.md run_meta.json plots/*.png  (§3.15.1)
 runs/ recordings/        run files (--save-run, demo --save) and GIF/MP4/PNG output (ignored)
 tests/  conftest.py helpers_maps.py helpers_phase2.py and test_{config,grid,model,belief,world,
         plan,andor,validate,fixpoint,bfs,astar,properties,agents,runner,invariants,demo,runs,
         viz,mapgen,stress,stretch_agents,compare,experiments}.py (§5), plus
         test_coverage_error_paths.py (Phase 7: error paths and CLI branches run in-process),
-        test_ext.py test_ext_core_hooks.py test_ext_experiments.py (§3.14),
+        test_ext.py test_ext_core_hooks.py test_ext_experiments.py (§3.14), test_lao.py
+        test_lao_report.py (§3.15.1), test_ext_fp.py (§3.15.2), test_ext_viz.py (§3.15.3),
         test_web.py (browser build: run_async, fonts, staging; docs/web.md)
 docs/   brief.md (original specification) plan.md architecture.md algorithm.md results.md
         web.md (browser demo)
         figures/ deck_demo.gif sim_deck_demo.png sim_deck_figure.png plan_tree_deck_demo.png
                  compare_collapsed_building.png
+                 ext_search.png ext_multi.png ext_noisy.png (make_ext_figures.py, §3.15.3)
 ```
 
 ---
@@ -533,6 +543,8 @@ def trace_from_events(events) -> list[TraceMark]
     trace_id: int = 0      # identity of the trace (e.g. a mission serial): a different id
                            # redraws the cached trace layer even if the new trace happens to
                            # extend the old one's first / last marks (reset, new seed, new map)
+    survivors=(); rescued=frozenset(); target=None; debris_prob=None   # extension marks,
+                           # drawn only when set (§3.15.3); core scenes render as before
     @classmethod from_mission(mission, *, show_true=False, show_policy=False, trace=None,
                               flash_cells=(), flash_alpha=0.0) -> GridScene
 class GridView: __init__(rect, palette, fonts); set_rect(rect); set_palette(palette);
@@ -742,8 +754,8 @@ at that point), never `g(s_start)`. Tests check every replan's path length again
 ```python
 # agents/__init__.py
 AGENT_NAMES = ("andor", "astar_fixed", "astar_replan")   # unchanged
-STRETCH_AGENT_NAMES = ("dstar_lite", "vi_expected")
-ALL_AGENT_NAMES = AGENT_NAMES + STRETCH_AGENT_NAMES      # AGENTS / make_agent cover all five
+STRETCH_AGENT_NAMES = ("dstar_lite", "vi_expected", "lao_expected")   # lao_expected: §3.15.1
+ALL_AGENT_NAMES = AGENT_NAMES + STRETCH_AGENT_NAMES      # AGENTS / make_agent cover all six
 class DStarLiteAgent(ReplanAStarAgent)       # id "dstar_lite": one DStarLite per mission; every
     dstar: DStarLite | None                  # replan syncs all belief changes since the last call
 class ValueIterationAgent(ContingencyAgent)  # id "vi_expected": planner = ValueIterationPlanner
@@ -759,7 +771,7 @@ class ValueIterationAgent(ContingencyAgent)  # id "vi_expected": planner = Value
 #     [--agents a,b,...] [--p P] [--radius R] [--lazy] [--aftershock-q Q --aftershock-k K]
 #     [--high-contrast] [--headless --frames F --screenshot PNG] [--record GIF|MP4] [--mp4]
 #     [--autoplay] [--speed INDEX]          # headless prints one status line per pane
-def parse_agents(text | Sequence[str] | None) -> tuple[str, ...]   # 2–5 distinct ALL_AGENT_NAMES
+def parse_agents(text | Sequence[str] | None) -> tuple[str, ...]   # 2–6 distinct ALL_AGENT_NAMES
 @dataclass(frozen=True) class CompareOptions: map_path; scenario; rows; cols; seed; agents;
     slip_p; sensor_radius; replan_mode; aftershock_q; aftershock_k; high_contrast; headless;
     frames; screenshot; record; autoplay; mp4; speed_index; recordings_dir
@@ -796,7 +808,7 @@ stays), `+/−`, `[ ]`, `M`, `T`, `P`, `C`, `G`, `H`, `Esc`. The figure
 `FLOOD_WATER_RANGE = (0.0, 0.6)`, `FLOOD_DEBRIS_RANGE = (0.0, 0.3)`;
 `MAZE_LOOP_FRACTION = 0.08`. Comparison: `COMPARE_DEFAULT_SCENARIO = "collapsed_building"`,
 `COMPARE_DEFAULT_SEED = 7`, `COMPARE_DEFAULT_SIZE = (15, 15)`, `COMPARE_MIN_AGENTS = 2`,
-`COMPARE_MAX_AGENTS = 5`, `COMPARE_DEFAULT_SPEED_INDEX = 4` (8 ticks/s, so a short headless
+`COMPARE_MAX_AGENTS = 6` (5 before round 2), `COMPARE_DEFAULT_SPEED_INDEX = 4` (8 ticks/s, so a short headless
 run gets somewhere), and the layout / colour constants `COMPARE_PANE_GAP`,
 `COMPARE_PANE_PADDING`, `COMPARE_METRIC_COLUMNS`, `COMPARE_EVENT_LINES`,
 `COMPARE_AGENT_COLOURS` (stretch-agent colours per palette), `COMPARE_MAX_PANE_ROWS = 2`.
@@ -1049,7 +1061,8 @@ class NoisySensor:  __init__(false_negative: float, seed: int, rows: int, cols: 
     # gives a cell the same draw in every mission on the map (CRN per (t, cell), whatever the
     # path or footprint); off-grid percept cell -> ValueError;
     # a true DEBRIS cell is reported OPEN with prob false_negative; OPEN/SURVIVOR never change;
-    # exempt cells (touch-sensed bumps) are never flipped. No false positives.
+    # exempt cells (touch-sensed bumps) are never flipped. No false positives (round 2 adds an
+    # optional false_positive rate, default 0: §3.15.2).
 class ProbBelief:   __init__(rows, cols, survivor: Pos | None, prior_debris, false_negative,
                              threshold)
     p_debris: np.ndarray (float64), observed: np.ndarray (bool)
@@ -1126,7 +1139,7 @@ run_ext_experiments(cfg, out_dir, workers=None, progress=True, *, max_tasks=None
     # spawn Pool + BLAS caps (as experiments.run); rows sorted by task then agent;
     # check_complete row-loss guard; identical across worker counts except planning_ms/elapsed_ms
 read_raw / write_summary (per condition × agent, plus scenario = 'all' pooled rows)
-claims.write_extensions(rows, path) -> EXTENSIONS.md      # X1–X5, rules printed per claim
+claims.write_extensions(rows, path) -> EXTENSIONS.md      # X1–X5 (+ X6, §3.15.2), rules printed
 plots.make_ext_plots(rows, out_dir) -> search_steps.png, multi_tours.png, noisy.png
     # search_steps: successful steps averaged per map first (map = unit of the CI); tours: one
     # value per survivor layout (EXT_LAYOUT_KEYS = EXT_MAP_KEYS + k), also in X3
@@ -1145,6 +1158,333 @@ bumps occur at ε > 0 and never at ε = 0 (a bump at ε = 0 is ❌: it breaks th
 and success at ε = 0.1 ≥ 95 %; **X5** non-inferiority: paired `search_andor − search_astar`
 bumps at ε > 0, map as the unit, pooled over ε and at every ε (❌ any CI > 0, ✅ every CI upper
 bound ≤ the absolute margin 0.1 bumps per mission, rationale in `config.py`).
+
+### 3.15 Round 2 additions (LAO\*, two-sided noise, extensions in the simulator)
+
+**Rule zero again**, against the baselines captured before this round: the core demo output
+byte-identical; the core `--quick` and the ext `--quick` `raw.csv` identical apart from timing
+columns (new columns or new blocks may be **added** to the ext output only if every pre-existing
+column of every pre-existing row is unchanged); `scripts/make_figures.py` output byte-identical
+to the committed `docs/figures/*`.
+
+#### 3.15.1 LAO\* (brief §8.1) — `planners/lao_star.py`, `agents/lao_expected.py`
+Same stochastic shortest path problem as `value_iteration` (unit step costs, goal absorbing at
+0, the true `P(o | s, a)` of the agent's `TransitionModel`, `TerrainSlip` aware, on the frozen
+belief snapshot with unknown assumed open), solved by heuristic search from the planning
+position instead of sweeping every free cell. Purpose: compare plan quality (expected steps)
+and planning effort with set-based AND-OR (`andor`) and with `vi_expected`.
+```python
+# planners/lao_star.py
+class LaoResult(NamedTuple): values: dict[Pos, float]   # explicit-graph states; optimal on
+                             policy: dict[Pos, Action] | None   # the final solution graph
+                             expanded_states: int; backups: int; iterations: int; converged: bool
+def heuristic(model) -> np.ndarray   # per cell: BFS steps to the goal on model.passable, inf if none
+def warm_up() -> bool   # cached: import + run scipy.sparse.csgraph once (False without scipy)
+def lao_star(model, start, tolerance=VI_TOLERANCE, max_iterations=LAO_MAX_ITERATIONS,
+             expansion_tolerance=LAO_EXPANSION_TOLERANCE) -> LaoResult
+    # ValueError unless 0 < tolerance < inf, expansion_tolerance > 0 (inf allowed: one sweep
+    # per round) and max_iterations >= 0 (a zero tolerance could never be met)
+    # start == goal → ({goal: 0}, {}, 0, 0, 0, True); start not free / h(start) = inf → policy
+    # None; policy = greedy actions of the final best solution graph (closed: every positive-
+    # probability outcome is a policy state or the goal); None if the graph still has tips
+class LaoStarPlanner:   # same interface as ValueIterationPlanner / AndOrPlanner
+    __init__(config=PlannerConfig()); plan(model, start) -> PlanResult
+    last_values: dict[Pos, float]; last_result: LaoResult | None
+    # __init__ calls warm_up(): the csgraph import (0.1–0.5 s per process) never lands in a
+    # plan's time_ms / the harness's planning_ms
+    # stats.nodes_expanded = expanded states; plan_size = policy states reachable from start;
+    # config.validate / fallback_to_reference exactly as ValueIterationPlanner
+# agents/lao_expected.py
+class LaoExpectedAgent(ContingencyAgent)   # id "lao_expected": planner = LaoStarPlanner,
+    lao_planner (alias of planner)          # same triggers / D10 anticipation as andor and
+    expected_steps: float                   # vi_expected; LAO* value at the planning position
+                                            # (inf without a plan, nan on reference fallback)
+```
+**Algorithm variant.** The original LAO\* (Hansen & Zilberstein 2001), all tips expanded per
+round. (1) The implicit graph is tabulated once per call with `transition_tables` (VI's
+vectorised helper, about the cost of one VI sweep) and `V = h`. (2) Repeat: build the best
+partial solution graph from the start (greedy action = first in `ACTIONS` within
+`VI_TIE_TOLERANCE` of the minimum, VI's rule; traversal with
+`scipy.sparse.csgraph.breadth_first_order`, imported lazily so the browser simulator still
+needs no scipy); if it has unexpanded non-goal tips, expand all of them and value-iterate
+(Jacobi) on **Z = every non-goal state of the best partial graph** (the new tips and all
+expanded states of the graph: a superset of the tips' ancestors, a subset of all expanded
+states) until the residual is `< LAO_EXPANSION_TOLERANCE`. (3) No tips: value-iterate on the
+best solution graph until the residual is `< tolerance` (`VI_TOLERANCE`) and rebuild the graph;
+a new tip → step 2, a changed state set → repeat (3), else stop. `iterations` counts expansion
+rounds, `backups` single-state Bellman backups. Expansion rounds and convergence tests have
+separate caps (`max_iterations`, `LAO_MAX_CONVERGENCE_TESTS`).
+
+**Heuristic.** `h(s)` = BFS distance to the goal on the planning passability. Every outcome
+moves at most one cell, so `h` is admissible and consistent (`h(s) ≤ 1 + Σ P·h(s')`): values
+only rise, and at termination the closed solution graph's values are lower bounds satisfying
+the Bellman equation, i.e. optimal. The start value equals VI's optimum (tested to 1e-6).
+
+**Constants** (`config.py`, section "Round 2: LAO\*"): `LAO_MAX_ITERATIONS = 100_000`
+(expansion-round cap: `converged` False plus a warning), `LAO_EXPANSION_TOLERANCE = 0.5`
+(residual, in steps, of the per-round VI on Z; it steers expansion only, never the result;
+0.5 was the fastest of 0.01 / 0.1 / 0.5 / 2 / ∞ on recorded mission planning calls),
+`LAO_MAX_CONVERGENCE_TESTS = 100_000` (convergence-test cap, counted apart from the expansion
+rounds; a bug guard like the expansion cap). Reused: `VI_TOLERANCE`, `VI_TIE_TOLERANCE`,
+`VI_MAX_ITERS` (sweep cap of each value iteration).
+
+**Registry and shared files.** `STRETCH_AGENT_NAMES` gains `"lao_expected"` (`AGENT_NAMES`
+unchanged); `COMPARE_MAX_AGENTS` 5 → 6 so `compare --agents` still accepts every agent;
+`contingency.Planner` includes `LaoStarPlanner`; colours: `viz.theme` palettes (default
+`(155, 120, 230)`, high-contrast `(180, 160, 255)`), plots `AGENT_STYLE` `#9b78e6`, marker `<`,
+stretch dash.
+
+**Experiment.** `experiments/lao.yaml` (core harness): block `lao_scaling`, random_rubble and
+maze_corridors, sizes 10–30, p = 0.2, agents `andor`, `vi_expected`, `lao_expected`, 50 maps
+(500 tasks, 1500 missions). Run it with `--out results/lao` (the harness default is
+`results/`); `results/lao/{raw.csv, summary.csv, HYPOTHESES.md, run_meta.json, plots/*.png}`
+are committable (`.gitignore`). `nodes_expanded` is not comparable across the three agents
+(AND-OR expansions, VI backups, LAO\* expanded states); compare `planning_ms` and `steps`.
+`HYPOTHESES.md` only covers the core H1–H7 (mostly "not measured" on this config); the
+experiment's own analysis is `python -m rescue.experiments.lao_report results/lao` →
+`results/lao/LAO.md` (`experiments/lao_report.py`, descriptive, no verdicts): paired
+`lao − vi` and `lao − andor` steps (both successful, map as the unit), success, the share of
+LAO\*/VI missions identical on every non-timing metric (`nodes_expanded` excepted); planning
+time per plan (`planning_ms / plans_made`) of the three agents by scenario × size and pooled
+per size, 95 % CIs, the LAO\*/VI ratio of means and the mean paired ratio, labelled with the
+run's worker count; LAO\* states expanded per plan, also as a share of the true map's free
+cells (can exceed 100 %: unknown cells are planned as open).
+
+**Tests** (`tests/test_lao.py`): start value and every solution-graph value = VI within 1e-6
+on 210 seeded maps (3..15 per side, p ∈ [0, 0.4], 70 with terrain); the exact expected cost
+of the LAO\* policy (linear solve on its closed envelope) = VI's optimum within 1e-6, strong
+cyclic; `h ≤ V*`; p = 0 → BFS distance; 1×N corridor closed form; unreachable start, start =
+goal, start on debris; iteration cap; expanded ≤ reachable free states; strictly fewer than
+all free states on ≥ 15 of 20 maps of 20×20 (open grid and random_rubble); agent missions
+with 0 bumps / 0 unplanned / 0 fallbacks; expected steps = `vi_expected`'s; NaN on the
+reference fallback; determinism; invalid tolerances / caps → `ValueError` (`expansion_tolerance
+= inf` and `max_iterations = 0` valid); the convergence-test cap is separate from the expansion
+cap; a fresh interpreter has `scipy.sparse.csgraph` loaded once a `LaoStarPlanner` exists.
+`tests/test_lao_report.py`: the `LAO.md` analysis on a small seeded run.
+
+**Findings before the full run (p = 0.2).** On the true 20×20 maps LAO\* expands on average
+62 % of the free cells on random_rubble and 95 % on a fully open grid: BFS distance
+underestimates the expected steps by up to ~1/(1 − p), and an open grid has many equally short
+routes, so the best partial graph keeps switching to fresh cells. Inside missions the belief
+treats unknown cells as open, so early plans see a nearly open map: 50–65 % (maze_corridors)
+and 70–85 % (random_rubble) of the free cells are expanded per plan. Value iteration's
+vectorised sweeps over ≤ 900 states are cheap, so LAO\* is **slower** in wall time: on a
+60-task sample of `lao.yaml` run in one process (`--workers 1`, after the csgraph warm-up fix)
+the mean planning time per plan was 1.6–2.2× `vi_expected`'s (2.2× at 10×10 falling to 1.6× at
+30×30, scenarios pooled; 1.4–2.3× per scenario and size); the same sample with 18 workers gave
+1.5–2.2× pooled, with absolute times 2–4× higher. (An earlier "1.5–5×" came from busy
+parallel runs whose first LAO\* plan per worker also paid the csgraph import.) The full run's
+ratios are in `results/lao/LAO.md`, labelled with its worker count. Both planners compute the
+same optimum; the sample's LAO\*/VI mission pairs were identical on every non-timing metric
+(60/60). That is an observation, not a guarantee: their values agree only to ~1e-7 on large
+maps (≈ `VI_TIE_TOLERANCE`) and they stop on different sweep schedules, so an exact tie may be
+broken differently. *Possible improvement, not implemented:* a tighter consistent heuristic
+`h(s) / (1 − SLIP_STAY_FRACTION · p_min)` (every step stays put with probability at least
+`0.75·p_min`) expands fewer states (reviewer measurement on 20×20 / 30×30 maps: expanded/free
+0.36 → 0.27 maze, 0.56 → 0.44 rubble) without changing the optimum; it would narrow the gap,
+not reverse it.
+
+#### 3.15.2 Two-sided sensor noise — `ext/sensing.py`, `ext/agents.py`, ext harness
+
+The debris sensor of §3.14 gains **false positives** (a free cell read as debris). This
+amends the §3.14 contract ("No false positives") only where `false_positive > 0`; with the
+default `false_positive = 0.0` every class, mission and harness row is the round-1 one.
+
+```python
+# ext/sensing.py
+debris_posterior(prior, reads_debris, false_negative, false_positive) -> float   # Bayes:
+#   OPEN:   P' = fn·P / (fn·P + (1 − fp)·(1 − P))
+#   DEBRIS: P' = (1 − fn)·P / ((1 − fn)·P + fp·(1 − P))      (fp = 0: returns 1, as round 1)
+#   zero denominator (a reading impossible under the model): prior kept
+class NoisySensor: __init__(false_negative, seed, rows, cols, false_positive=0.0)
+    # false_positive in [0, EXT_MAX_FALSE_POSITIVE = 0.5) else ValueError
+    # still EXACTLY rows*cols uniforms per call; cell (r, c) uses u[r*cols + c]:
+    #   true DEBRIS -> OPEN iff u < false_negative;  true OPEN -> DEBRIS iff u < false_positive
+    #   SURVIVOR and exempt cells never change (one uniform serves both directions: a cell is
+    #   either debris or free); flips are nested in the rate (CRN across fp levels)
+class ProbBelief: __init__(rows, cols, survivor, prior_debris, false_negative, threshold,
+                           false_positive=0.0, debris_floor=0.0)
+    # debris_floor in [0, threshold) else ValueError
+    update(percept, touched=(), here=None) -> BeliefUpdate
+    #   per reading: debris_posterior;  touched -> 1;  SURVIVOR -> 0;
+    #   a DEBRIS reading starts from max(P, debris_floor) (no effect when fp = 0);
+    #   here (the robot's cell) -> 0, only when fp > 0 (with fp = 0 it is ignored, so the
+    #   probabilities stay bit-identical to round 1; passability is the same either way)
+# ext/agents.py
+relaxed_passable_mask(belief) -> P < max(threshold, EXT_FALLBACK_MAX_P = 0.999)  (ProbBelief);
+                                 the ordinary mask for a BeliefMap
+frontier_mask(belief, passable=None)
+SearchAgent(..., *, fallback=True); make_ext_agent(..., *, fallback=True)
+    on_outcome(new_pos, percept, touched=())   # passes touched / here to a ProbBelief
+    relaxed: bool; fallback_replans: int       # per mission (reset_search); episodes
+# ext/mission.py
+ExtMission(..., false_negative=0.0, false_positive=0.0, ...)
+    # ProbBelief when fn > 0 or fp > 0; prob_belief=False with any noise -> ValueError
+    # debris_floor = prior_debris with aftershocks enabled and fp > 0, else 0 (see below)
+    # sensor exempt = (bump target, robot's new cell); agent.on_outcome(new_pos, percept, touched)
+ExtMetrics: ... aftershock_events, false_positive: float = 0.0, fallback_replans: int = 0
+```
+
+**Fallback.** A false positive can lift a free cell over the threshold (a *phantom wall*), so
+"no reachable target" no longer proves the survivor unreachable. When the strict search
+(`P < threshold`) finds no target, the agent switches to the relaxed passability (only cells at
+`P ≥ 0.999` block: a touched cell, or one that repeated DEBRIS readings made near-certain),
+re-selects the target and plans on it before it would abort. The relaxed mode lasts until the
+next target re-selection, which tries the strict passability first. `fallback_replans` counts
+*episodes*, i.e. strict → relaxed switches: a re-selection made while relaxed that falls back
+again continues the episode and is not counted (fix pass: counting it inflated `search_andor`,
+whose envelope re-triggers re-selection far more often than an A\* path; on the quick
+`noisy_fp` tasks at fp = 0.2, 163 counted fallbacks were 62 episodes + 101 re-entries, against
+20 + 1 for `search_astar`). Fallback counts still depend on the planner (AND-OR's envelope holds
+off-path skid cells), so they are not directly comparable across agents. A target reachable on
+the passability in force always has a plan (A\* is complete; every AND-OR outcome stays in the
+robot's connected component, so a strong-cyclic plan exists), so "no plan" is no fallback
+trigger; if a planner ever returned none the agent aborts `unreachable`, after one planning call
+per update (`stats.replans` = updates with `replanned=True`). While relaxed, a cell of the plan
+in force that becomes relaxed-impassable (e.g. a suspected cell that turns out to be debris:
+the bump sets `P = 1`, which is no threshold *contradiction* because the cell was already above
+the threshold) re-selects the target and replans; without that rule the robot bumped the same
+cell until the step budget (found on the first quick run, fixed before any result was kept). The
+switch happens only when the relaxed mask differs from the strict one. With `fp = 0` it never
+does: every cell is unobserved (`P` = prior `< threshold`), read OPEN only (`P` ≤ prior) or read
+DEBRIS / touched (`P = 1` exactly), so `P ≥ threshold ⟺ P ≥ 0.999` (proof in the
+`SearchAgent` docstring; checked per step in `tests/test_ext_fp.py`). With `fp > 0` debris can
+be un-seen, so the round-1 termination argument no longer holds; the step budget bounds every
+mission. With false positives an AND-OR *unplanned state* is an expected model mismatch (the
+robot skids into a cell believed to be debris that is free), so it is logged at DEBUG (still
+counted and replanned, D10).
+
+**Aftershocks with false positives** (fix pass). The Bayes filter assumes a static map. With
+`fp > 0` a cell at `P = 0` (the robot's own cell; or a cell read OPEN with fn = 0) stays at 0
+under every DEBRIS reading (`(1 − fn)·0 / (0 + fp)`), so debris an aftershock drops on a visited
+cell was never sensed, only bumped into (60 random_rubble 12×12 missions, `search_astar`, fn =
+fp = 0.1, q = 0.3, k = 2: 243 true-debris cells ended at `P = 0`; 108 bumps vs 45 without
+aftershocks). `ExtMission` therefore gives the `ProbBelief` `debris_floor = prior_debris` when
+aftershocks are enabled and `fp > 0`: a DEBRIS reading of a cell believed free counts as much as
+one of an unseen cell (a disturbed cell is no better known than an unseen one; no new constant).
+Measured on the same 60 missions afterwards: 72 bumps for `search_astar` (andor 116 → 45), with
+no DEBRIS reading of a true-debris cell left at `P = 0`. The ext harness has no aftershocks, so
+no harness row changes; with `fp = 0` a DEBRIS reading gives `P = 1` whatever the prior, so the
+floor is never set there and changes nothing.
+
+**Harness.** `ExtBlock.false_positive: tuple[float, ...] = (0.0,)` (YAML key `false_positive`,
+validated `[0, 0.5)`); `ExtTask.false_positive = 0.0` (last field); `expand_tasks` loops it
+inside ε, so blocks without it keep the round-1 order. `raw.csv` **appends** `false_positive`,
+`fallback_replans` after `elapsed_ms` (every round-1 column keeps its position; `read_raw` fills
+them with 0 for an older file). `EXT_TASK_KEYS` gains `false_positive`; the summary groups by it
+and adds `fallback_replans_{mean,lo,hi}`; both are written after every round-1 summary column
+(`…, tour_ratio_hi, false_positive, fallback_replans_mean, …_lo, …_hi`), so each round-1 column
+keeps its position there too. Block `noisy_fp` (appended to `ext.yaml` /
+`ext_quick.yaml`): all four scenarios, size 15 (quick 10), p = 0.2, location known, ε = 0.1,
+`false_positive` ∈ {0, 0.05, 0.1, 0.2}, `search_andor` + `search_astar`, 200 maps (quick 10). Its
+task seeds equal the `noisy` block's, so fp = 0 replays `noisy` at ε = 0.1 (identical rows apart
+from the block label). Plot `plots/noisy_fp.png`: success, bumps per mission, steps (successful)
+and fallbacks per mission vs fp.
+
+**X6** (`EXT_CLAIM_FP = 0.1`, fixed before the full run): "with false positives up to ε_fp = 0.1
+`search_andor` still rescues ≥ 95 %". Rule (H1's): at every level `0 < fp ≤ 0.1` of block
+`noisy_fp`, ✅ if the success rate is ≥ 95 %, ⚠️ if below but the Wilson upper bound reaches
+95 %, ❌ if the upper bound is below; overall ✅ only if every level is ✅, ❌ if any is ❌, else
+⚠️ (⚠️ "not measured" without runs at fp = 0.1). Reported without a verdict (no threshold was
+fixed for them): the steps cost of false positives (paired `steps(fp) − steps(0)` of each agent
+against itself, both successful, map as the unit), the bumps cost (paired, all missions), the
+fallback usage (missions with a fallback, fallbacks per mission) and the failures. X1–X5 read
+blocks `search` / `multi` / `noisy` only and are unchanged.
+
+**Rule zero.** `ext --quick` reproduces every round-1 column of every round-1 row of the
+baseline `raw.csv` (800 rows, 0 differing cells outside the timing columns) and adds the 320
+`noisy_fp` rows; whole-mission event digests at fp = 0 match digests recorded with the round-1
+code (`test_fp0_missions_match_round1_traces`). No core module changed (constants were appended
+to `config.py` under their own header).
+
+#### 3.15.3 Extensions in the interactive simulator — `viz/ext_sim_app.py`, `sim.py --ext`
+The desktop simulator runs the §3.14 missions; the browser build stays core-only
+(`web/main.py` never imports the module; `build_web.py` drops `ext/` and, since round 2,
+`viz/ext_sim_app.py` (`EXCLUDED_MODULES`); `rescue.sim` spells the ext agent names out as
+`EXT_AGENT_CHOICES` (= `EXT_AGENT_NAMES`, tested) and imports `rescue.ext` only with `--ext`,
+so the core simulator and the staged bundle never load it — tested).
+```python
+# viz/ext_sim_app.py
+EXT_MODES = ("search", "multi", "noisy")            # X cycles them; = ext.demo.MODES
+mode_settings(mode, k=None, noise=None, false_positive=None) -> ExtModeSettings
+    # (mode, survivors_known, k, false_negative, false_positive): the demo mode's defaults
+    # (search: 1 unknown survivor; multi: EXT_DEMO_MULTI_K known; noisy: 1 known, ε =
+    # EXT_DEMO_NOISE), overridden in EVERY mode by --k / --noise / --fp (as in ext.demo); fp 0
+false_positive_supported() -> bool   # NoisySensor.__init__ AND ExtMission.__init__ take a
+    # `false_positive` keyword (two-sided noise track, §3.15.2), inspected at run time; when
+    # False a requested fp is logged ("… --fp ignored") and never passed on
+ext_event_messages(event, *, previous_target, rescued_count, k) -> [(text, kind)]
+    # the core lines of sim_app.event_messages (slip / skid / blocked / aftershock / replan /
+    # unplanned) with the bump worded "Bump into unseen debris at (r,c)" (it replaces the
+    # core's "Move … blocked" line), then "Survivor found at (r,c)", "Rescued (r,c) — i/k",
+    # "Exploring frontier (r,c)" / "Heading to survivor (r,c)" when the target changed, and
+    # the end ("Rescue successful" / "All k survivors rescued" / "Mission failed (…)")
+@dataclass(frozen=True) class ExtSimOptions(SimOptions):   # defaults = the ext demo's:
+    scenario = EXT_DEMO_SCENARIO; rows, cols = EXT_DEMO_SIZE; seed = EXT_DEMO_SEED
+    agent = "search_andor"; mode = "search"; k = noise = false_positive = None
+class ExtSimApp(SimApp)      # drives ExtMission + make_ext_agent; no mission logic in the UI
+    # keys as the simulator (mission keys, X included, also act under the help overlay,
+    # as in the core simulator): Space N R S + - [ ] T P C G H Esc; 1 / 2 = search_andor /
+    # search_astar (3 logs a hint); X = next mode (same overrides, map rebuilt, reset);
+    # M = next *generated* scenario (mapgen GENERATED_SCENARIOS; --map / a maps/ name is
+    # inserted first); S = seed + 1 and the map (or a map file's extra survivors) rebuilt.
+    # E and Ctrl+S log "Map editor is disabled in extension mode"; save_run is refused.
+    # Map = multi_survivor_grid(scenario, rows, cols, seed, k), or add_survivors(map file).
+    # Panel: title "Extensions: <mode>", metrics Steps / budget, Mode (explore / rescue /
+    # done), Rescued i/k, First found (t = …, "–" before), Replans, Slips, Skids, Bumps,
+    # Explored, Unplanned, Fallbacks (ExtMetrics.fallback_replans: the relaxed-passability
+    # replans of §3.15.2, 0 unless fp > 0; the core planner-budget fallback is not shown, as in
+    # the core panel), Plan ms, Plan #, Noise ε (" / fp …" when passed), and Aftershocks
+    # (aftershock_events) only when --aftershock-q > 0. A passed false-positive rate also logs
+    # how possible phantoms are drawn (PHANTOM_HINT_TEXT); plan tree = the SearchAgent's
+    # current AND-OR plan (its PlanSnapshot), the A* path for search_astar, else
+    # "No target: …" / "No plan: …".
+```
+With the same scenario, size, seed, p and agent, a mission is exactly `python -m
+rescue.ext.demo --mode <mode>`'s (test). **CLI**: `python -m rescue.sim --ext
+search|multi|noisy [--k N] [--noise EPS] [--fp EPS] [--scenario NAME | --map PATH]
+[--rows R --cols C] [--seed S] [--agent search_andor|search_astar]` plus every other flag
+(`--headless --frames --screenshot`, `--p`, `--radius`, …). `--rows/--cols/--seed/--agent`
+now default to None and resolve per app (core: GENERATED_MAP_SIZE, DEMO_SEED, andor — unchanged);
+`--k/--noise/--fp` without `--ext`, `--save-run` with it, and an agent of the other family are
+argparse errors. Without `--ext` nothing changes.
+
+**Rendering additions** (`grid_view.py`, `panel.py`, `theme.py`), all defaulted so that a core
+scene / panel renders byte-identically (tested against the pre-round-2 commit's modules,
+pinned as `RULE_ZERO_BASE = "a948f27"` in tests/test_ext_viz.py, and the committed
+figures):
+```python
+GridScene(..., survivors: tuple[Pos, ...] = (),   # extra survivors: robot ring on them too
+          rescued: frozenset[Pos] = frozenset(),  # green ring + tick badge (bottom-right)
+          target: Pos | None = None,              # dashed square on a dark halo + flag;
+          # on cells < TARGET_COMPACT_MAX_CELL px: square on the cell edge, thin halo, no flag
+          debris_prob: np.ndarray | None = None)  # P(debris); cells shown DEBRIS with P <
+    # PHANTOM_CERTAIN_P (= 1; possible phantoms, only with fp > 0) get a light veil + '?'
+    # badge (PHANTOM_*); observed cells shown OPEN get a
+    # one-way hatch, level = ceil(L·log(P/PROB_SHADE_MIN)/log(PROB_SHADE_MAX/PROB_SHADE_MIN))
+    # in 1..PROB_SHADE_LEVELS (0 at P <= 1e-3); higher = more opaque AND denser lines. Log
+    # scale because one OPEN reading at ε = 0.1 gives P ≈ 0.011, two ≈ 0.0011
+prob_shade_levels(p) -> int array; prob_hatch_surface(size, colour, level);
+prob_legend_swatches(palette) -> tuple[Surface, ...]
+panel.Legend(title, swatches, low, high); PanelInfo(..., legend: Legend | None = None)
+    # one row under the metrics: "P(debris) of seen-open cells  0.001 [5 swatches] 0.5"
+BaseApp._help_lines()        # hook (default help_lines(help_items)); ext drops the editor
+theme: ExtColours / EXT_COLOURS / ext_colours(palette) (rescued, tick, target, halo, hatch per
+       palette), RESCUED_* / TARGET_* / PROB_* / LEGEND_* sizes, EXT_SIM_CAPTION; palette
+       `agent` dicts gain search_andor / search_astar (the hues of andor / astar_replan)
+```
+In `search` mode an unfound survivor is UNKNOWN in the belief, so it stays under the fog
+unless `T` shows the true map. Target / rescued marks are drawn per frame (after the trace,
+target before the robot, rescued after it); the hatch is part of the cached static layer (its
+levels are in the layer's version key).
+
+**Figures**: `scripts/make_ext_figures.py [--out DIR] [--only search multi noisy]` (new;
+`make_figures.py` untouched) writes `docs/figures/ext_search.png` (search, first step ≥ 30
+whose frontier target is ≥ 3 cells away, policy arrows on: t = 57, target (10,6)),
+`ext_multi.png` (just after the first rescue: t = 20, (3,9) rescued, target (4,4)) and
+`ext_noisy.png` (just after the 3rd bump: t = 18, P(debris) hatch + legend), with the
+node count in place of "Plan ms" and a 450 ms clock advance before each capture (as
+`make_figures.py`), so the files are deterministic. Tests: `tests/test_ext_viz.py`.
 
 ---
 

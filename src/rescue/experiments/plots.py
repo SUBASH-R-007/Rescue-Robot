@@ -77,6 +77,8 @@ AGENT_STYLE: dict[str, AgentStyle] = {
     "astar_replan": AgentStyle("#1baf7a", "^", "A* + replan (astar_replan)"),
     "dstar_lite": AgentStyle("#eda100", "D", "D* Lite (dstar_lite)", STRETCH_DASH),
     "vi_expected": AgentStyle("#e87ba4", "v", "VI expected steps (vi_expected)", STRETCH_DASH),
+    "lao_expected": AgentStyle("#9b78e6", "<", "LAO* expected steps (lao_expected)",
+                               STRETCH_DASH),
 }
 #: Unknown agents: neutral grey (no generated hues) with spare marker shapes.
 FALLBACK_COLOUR: str = "#7b8494"

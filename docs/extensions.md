@@ -64,7 +64,8 @@ reveals the cells around it, which pushes the frontier outwards. Frontier explor
 chosen because it fits the core loop without new machinery. A frontier cell is just another
 goal for the core planners, so the AND-OR planner, its strong-cyclic guarantee and the
 replanning triggers all carry over unchanged. And because the sensor has no false positives
-(§2.2), it terminates.
+(§2.2), it terminates. (False positives were added later as an option, `false_positive`,
+default 0; every argument and result in §1–§6 is for the default. See §7.)
 
 ### 1.2 Multiple survivors (§8.5): greedy order, re-evaluated after each rescue
 
@@ -80,7 +81,7 @@ rule honest about what it knows. The rule's quality is measured against an oracl
 
 The core sensor is perfect. Here, the sensor reports a true DEBRIS cell as OPEN with
 probability ε (a **false negative**: dust or smoke hides the rubble). It never reports debris
-where there is none, and it never hides a survivor. Missed debris can now surprise the robot, so
+where there is none (at the default `false_positive = 0`; §7), and it never hides a survivor. Missed debris can now surprise the robot, so
 **collisions (bumps, D6) become possible**. Under the core's perfect sensor with r ≥ 1 they are
 impossible. A bump reveals the debris by touch.
 
@@ -143,8 +144,9 @@ The argument is informal. It is written out in full in the `SearchAgent` docstri
   frontier cell.
 
 So after finitely many target changes every survivor is rescued, with probability 1. The
-argument relies on the sensor having no false positives and on unknown cells being optimistic
-(prior below the threshold). For this reason `ExtMission` rejects `prior_debris ≥ threshold`,
+argument relies on the sensor having no false positives (`false_positive = 0`, the default and
+the setting of every run in this chapter; with false positives it fails, see §7) and on unknown
+cells being optimistic (prior below the threshold). For this reason `ExtMission` rejects `prior_debris ≥ threshold`,
 and it rejects the categorical `BeliefMap` when ε > 0, because a noisy OPEN reading would
 overwrite known debris there. The step budget is `4·R·C·k` (the core D15 budget times k).
 
@@ -513,7 +515,7 @@ with 18 worker processes. The ratio is more reliable than the absolute values.
 ### 6.2 The success claims do not discriminate
 
 X1 and part (b) of X4 are supported with 100 % success, but every mission of both agents
-succeeded in every block. The maps are solvable, sensing has no false positives, and the budget
+succeeded in every block. The maps are solvable, sensing has no false positives here, and the budget
 is generous. As in the core H1, these claims show that the extensions are reliable. They do not
 show that AND-OR is needed for reliability.
 
@@ -560,10 +562,17 @@ foundation for that work, but in this run its decisions match a simpler rule.
 
 ## 7. Limitations and future work
 
-* **False positives.** The sensor never reports debris that is not there. With false positives,
-  one DEBRIS reading would no longer be final, P could fall below the threshold again, and the
-  termination argument (cause 2 in §2.2) would no longer hold. That needs a two-sided update and
-  a rule against flip-flopping, such as hysteresis or a minimum number of readings.
+* **False positives (added in round 2, `docs/plan.md` §3.15.2).** The sensor of §1–§6 never
+  reports debris that is not there. A later round added an optional false-positive rate
+  `false_positive` (default 0, which reproduces every result above): a two-sided Bayes update,
+  and a fallback that retries with only near-certain debris blocking when a phantom wall leaves
+  no reachable target. One DEBRIS reading is then no longer final and P can fall below the
+  threshold again, so the termination argument (cause 2 in §2.2) no longer holds; the step
+  budget bounds every mission. There is still no rule against flip-flopping (hysteresis or a
+  minimum number of readings). The belief also assumes a static map: with aftershocks a DEBRIS
+  reading is applied to at least the prior, otherwise a cell the robot stood on (P = 0) could
+  never be seen to fill with debris. Its results are claim X6 of block `noisy_fp`
+  (`results/ext/EXTENSIONS.md` once the full run includes the block).
 * **Planning in belief space (POMDP).** The planners still see a thresholded, deterministic
   passability map. Neither uses P to prefer certainly-open cells, and neither plans actions
   that gather information, such as looking before committing to a corridor. A POMDP or

@@ -1,6 +1,6 @@
 """Head-to-head comparison app (``python -m rescue.compare``, brief §6.2, docs/plan.md §3.11).
 
-:class:`CompareApp` shows 2-5 agents (default ``andor | astar_fixed | astar_replan``) side by
+:class:`CompareApp` shows 2-6 agents (default ``andor | astar_fixed | astar_replan``) side by
 side. Every pane owns its own :class:`~rescue.runner.Mission` on the **same** true map with the
 **same** world seed, so every :class:`~rescue.world.World` draws its one outcome uniform per
 step from an identically seeded stream (common random numbers, D3): at step ``t`` all robots
@@ -198,7 +198,7 @@ class CompareOptions:
     """Comparison settings (the CLI flags of ``python -m rescue.compare``).
 
     ``map_path`` (an ASCII map) takes precedence over ``scenario`` (a ``rescue.mapgen``
-    scenario generated at ``rows`` x ``cols`` with ``seed``). ``agents`` are 2-5 distinct ids
+    scenario generated at ``rows`` x ``cols`` with ``seed``). ``agents`` are 2-6 distinct ids
     of ``ALL_AGENT_NAMES``. ``autoplay`` None means "play when headless".
     """
 
@@ -310,7 +310,7 @@ def _line_h(font: pygame.font.Font) -> int:
 
 
 class CompareApp(BaseApp):
-    """Side-by-side panes of 2-5 agents on one map and one seed, stepped in lock-step."""
+    """Side-by-side panes of 2-6 agents on one map and one seed, stepped in lock-step."""
 
     caption = COMPARE_CAPTION
     help_items = True

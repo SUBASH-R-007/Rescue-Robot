@@ -42,6 +42,11 @@ $PY scripts/make_figures.py --only gif tree --out <dir>    # a subset, somewhere
 $PY -m rescue.ext.demo --mode search          # extension demo: search | multi | noisy (brief §8)
 $PY -m rescue.ext.experiments --quick         # < 60 s, writes results/ext/quick/ (git-ignored)
 $PY -m rescue.ext.experiments                 # experiments/ext.yaml → results/ext/ (committed)
+$PY -m rescue.sim --ext search                # extensions in the simulator: search | multi | noisy
+$PY scripts/make_ext_figures.py               # extension figures → docs/figures/ext_*.png
+$PY -m rescue.experiments --config experiments/lao.yaml --out results/lao   # LAO* vs VI (NOTE --out)
+$PY -m rescue.experiments.lao_report results/lao                           # → results/lao/LAO.md
+$PY scripts/build_web.py                      # pygbag browser build → build/web_app/build/web
 ```
 
 Headless runs (CI, screenshots, smoke checks): `sim`, `compare` and `replay` take
@@ -99,9 +104,10 @@ elsewhere. `--max-tasks N --out DIR` runs an evenly spaced sample of the full co
   (the deck's `N-plan` is not reachable by a distance-ordered planner — see D14).
 - Aftershocks hit cells outside the robot's current sensor footprint and never disconnect the
   survivor on the true map.
-- Stretch agents `dstar_lite` / `vi_expected` are not in `AGENT_NAMES` (UI `1/2/3`, default
-  compare panes); `ALL_AGENT_NAMES` holds all five for `make_agent`, `compare --agents` and the
-  harness (D19).
+- Stretch agents `dstar_lite` / `vi_expected` / `lao_expected` are not in `AGENT_NAMES` (UI
+  `1/2/3`, default compare panes); `ALL_AGENT_NAMES` holds all six for `make_agent`,
+  `compare --agents` and the harness (D19). LAO\* (plan §3.15.1) returns VI's optimal values
+  but is slower than vectorised VI on these grids — report it, don't tune it.
 - Experiments: a task seed depends only on `(base_seed, scenario, size, replicate)`, so every
   agent, slip p, sensor radius, replan mode, aftershock q and `planner` override replays the
   same map and outcome stream; paired tests use the map as the unit (D21, plan §3.13).

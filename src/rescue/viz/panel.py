@@ -48,6 +48,7 @@ from rescue.viz.theme import (
     HELP_OVERLAY_ALPHA,
     HELP_PADDING,
     HELP_ROW_GAP,
+    LEGEND_SWATCH_GAP,
     LINE_SPACING,
     LOG_ACCENT_W,
     LOG_CAPACITY,
@@ -175,6 +176,17 @@ class EventLog:
 
 
 # --- panel -------------------------------------------------------------------------------------
+@dataclass(frozen=True)
+class Legend:
+    """A one-row legend drawn under the metrics (extension simulator, plan §3.15.3):
+    ``title``, then ``low`` · the ``swatches`` left to right · ``high``."""
+
+    title: str
+    swatches: tuple[pygame.Surface, ...]
+    low: str = ""
+    high: str = ""
+
+
 @dataclass
 class PanelInfo:
     """Everything the panel shows besides the plan tree and the log (all pre-formatted).
@@ -196,6 +208,8 @@ class PanelInfo:
     recording: bool = False
     hint: str = DEFAULT_HINT
     editing: bool = False
+    #: Optional legend under the metrics (None draws nothing: the core panel is unchanged).
+    legend: Legend | None = None
 
 
 def _line_h(font: pygame.font.Font) -> int:
@@ -349,6 +363,8 @@ class Panel:
             pygame.draw.line(surface, pal.grid_line, (left, y), (left + width - 1, y))
             y += SECTION_GAP
             y = self._draw_metrics(surface, info.metrics, left, y, width)
+            if info.legend is not None:
+                y = self._draw_legend(surface, info.legend, left, y + SECTION_GAP // 2, width)
 
             footer_h = _line_h(fonts.small)
             footer_y = rect.bottom - PANEL_PADDING - footer_h
@@ -446,6 +462,27 @@ class Panel:
             self._text(surface, label_font, label, pal.text_dim, x, ry + label_dy,
                        col_w - vw - LINE_SPACING * 2)
         return y + per_col * line_h
+
+    def _draw_legend(self, surface: pygame.Surface, legend: Legend, left: int, y: int,
+                     width: int) -> int:
+        """``title  low [swatches] high`` on one row; returns the next y."""
+        pal, font = self.palette, self.fonts.small
+        size = max((s.get_height() for s in legend.swatches), default=0)
+        line_h = max(_line_h(font), size + LINE_SPACING)
+        text_dy = (line_h - font.get_height()) // 2
+        x = left
+        x += self._text(surface, font, legend.title, pal.text_dim, x, y + text_dy, width)
+        x += SECTION_GAP
+        if legend.low:
+            x += self._text(surface, font, legend.low, pal.text_dim, x, y + text_dy)
+            x += LEGEND_SWATCH_GAP
+        for swatch in legend.swatches:
+            surface.blit(swatch, (x, y + (line_h - swatch.get_height()) // 2))
+            x += swatch.get_width() + LEGEND_SWATCH_GAP
+        if legend.high:
+            self._text(surface, font, legend.high, pal.text_dim, x, y + text_dy,
+                       max(0, left + width - x))
+        return y + line_h
 
     def _draw_log(self, surface: pygame.Surface, log: EventLog, left: int, y: int, width: int,
                   line_h: int) -> None:
@@ -601,6 +638,7 @@ def draw_help_overlay(
 __all__ = [
     "LOG_KINDS",
     "EventLog",
+    "Legend",
     "Panel",
     "PanelInfo",
     "badge_size",
