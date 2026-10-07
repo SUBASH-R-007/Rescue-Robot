@@ -1,0 +1,26 @@
+{
+  "config_name": "lao",
+  "config_path": "experiments/lao.yaml",
+  "base_seed": 2026,
+  "n_maps": 50,
+  "agents": [
+    "andor",
+    "vi_expected",
+    "lao_expected"
+  ],
+  "blocks": [
+    "lao_scaling"
+  ],
+  "n_tasks": 500,
+  "n_tasks_total": 500,
+  "max_tasks": null,
+  "n_runs": 1500,
+  "workers": 18,
+  "wall_time_s": 179.611,
+  "started_at": "2026-10-07T22:22:08+05:30",
+  "finished_at": "2026-10-07T22:25:07+05:30",
+  "date": "2026-10-07",
+  "git_commit": "cfb50a2",
+  "python": "3.11.9",
+  "platform": "Windows-10-10.0.26200-SP0"
+}

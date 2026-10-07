@@ -10,18 +10,19 @@
   "blocks": [
     "search",
     "multi",
-    "noisy"
+    "noisy",
+    "noisy_fp"
   ],
-  "n_tasks": 8000,
-  "n_tasks_total": 8000,
+  "n_tasks": 11200,
+  "n_tasks_total": 11200,
   "max_tasks": null,
-  "n_runs": 14400,
+  "n_runs": 20800,
   "workers": 18,
-  "wall_time_s": 277.112,
-  "started_at": "2026-10-07T19:43:18+05:30",
-  "finished_at": "2026-10-07T19:47:55+05:30",
+  "wall_time_s": 450.303,
+  "started_at": "2026-10-07T22:14:31+05:30",
+  "finished_at": "2026-10-07T22:22:01+05:30",
   "date": "2026-10-07",
-  "git_commit": "762a944",
+  "git_commit": "cfb50a2",
   "python": "3.11.9",
   "platform": "Windows-10-10.0.26200-SP0"
 }

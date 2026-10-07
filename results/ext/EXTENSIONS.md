@@ -1,13 +1,13 @@
 # Extension claims — `ext`
 
 - Date of run: 2026-10-07
-- Missions (rows of raw.csv): 14400; agents: `search_andor`, `search_astar`
+- Missions (rows of raw.csv): 20800; agents: `search_andor`, `search_astar`
 - Config file: `experiments/ext.yaml`
 - Base seed: 2026
-- Tasks (maps × conditions): 8000
+- Tasks (maps × conditions): 11200
 - Workers: 18
-- Wall time: 277.1 s
-- Git commit: `762a944`
+- Wall time: 450.3 s
+- Git commit: `cfb50a2`
 - Methods: success rates with Wilson 95 % intervals; means with Student-t 95 % intervals; paired comparisons on identical maps and outcome / noise streams (a task seed depends only on base seed, scenario, size and replicate) with a paired t-test and a Wilcoxon signed-rank test; pooled paired comparisons use the map as the unit (per-map mean difference; n = maps, not pairs). The noise draws are paired per (step, cell): one uniform per grid cell per step, the same in every mission on that map.
 - Verdicts: ✅ supported, ❌ refuted, ⚠️ inconclusive or not measured. Thresholds are constants in `rescue/config.py` fixed before the full run; no experiment was tuned toward a verdict.
 
@@ -20,6 +20,7 @@
 | X3 | the greedy nearest-first order is within 10.0% of the optimal tour | ✅ | k = 1: ×1.000 [1.000, 1.000]; k = 2: ×1.000 [1.000, 1.000]; k = 3: ×1.011 [1.008, 1.015]; k = 4: ×1.027 [1.022, 1.033] |
 | X4 | with noisy sensing collisions become possible (bumps > 0) but success stays ≥ 95.0% at ε = 0.1 (`search_andor`) | ✅ | collisions ✅: Σ bumps = 2719 in 2400 runs at ε > 0 (1154 missions bumped) vs 0 in 800 runs at ε = 0; success at ε = 0.1 ✅: 100.0% [99.5%, 100.0%] (800/800) |
 | X5 | under noise `search_andor` has at most 0.1 more collisions per mission than `search_astar` (non-inferiority, every ε) | ✅ | pooled -0.04 bumps per mission [-0.11, +0.03] over 800 maps (2400 pairs), paired t p = 0.28, Wilcoxon p = 0.32; largest per-ε upper bound +0.06 at ε = 0.2; Σ bumps 2719 vs 2816 |
+| X6 | with false positives up to ε_fp = 0.1 `search_andor` still rescues ≥ 95.0% of missions | ✅ | ε_fp = 0.05: 100.0% [99.5%, 100.0%] (800/800) ✅; ε_fp = 0.1: 100.0% [99.5%, 100.0%] (800/800) ✅; at ε_fp = 0.1 (informational): steps cost +46.53 steps [+40.79, +52.27] over 800 maps (800 pairs), paired t p = 1.1e-49, Wilcoxon p = 1.4e-72, fallback in 266/800 missions, Σ bumps 1688 |
 
 ## Details
 
@@ -110,3 +111,31 @@ Rule (non-inferiority, margin 0.1 bumps per mission, an absolute margin fixed be
 | 0.05 | -0.01 bumps [-0.07, +0.05] over 800 maps (800 pairs), paired t p = 0.73, Wilcoxon p = 0.73 | 409 | 417 |
 | 0.1 | -0.05 bumps [-0.13, +0.04] over 800 maps (800 pairs), paired t p = 0.28, Wilcoxon p = 0.39 | 760 | 797 |
 | 0.2 | -0.07 bumps [-0.19, +0.06] over 800 maps (800 pairs), paired t p = 0.32, Wilcoxon p = 0.5 | 1550 | 1602 |
+
+### X6. ✅ with false positives up to ε_fp = 0.1 `search_andor` still rescues ≥ 95.0% of missions
+
+Block `noisy_fp` (round 2): the debris sensor reports a true DEBRIS cell as OPEN with probability ε (here ε = 0.1) and a true OPEN cell as DEBRIS with probability ε_fp (two-sided noise; survivor cells, the robot's own cell and a cell a bump touched are never misreported); the belief is the two-sided Bayes map (`ProbBelief`). A false positive can raise a free cell over the debris threshold (a phantom wall); when no target is reachable under the threshold, `SearchAgent` falls back to relaxed passability (only near-certain debris blocks) before giving up. A fallback is counted once per episode (a switch from strict to relaxed passability; a target re-selection made while relaxed that falls back again is not counted). `search_andor` re-selects more often while relaxed (a cell of its plan envelope, which holds skid cells off the main path, turning near-certain debris triggers it), so the fallback counts of the two agents measure partly different things and are not directly comparable. ε_fp = 0 replays block `noisy` at the same ε (same maps and streams).
+
+Rule: at every false-positive rate 0 < ε_fp ≤ 0.1 of the block, ✅ if `search_andor`'s success rate is ≥ 95.0%; ⚠️ if it is below but the Wilson 95 % upper bound reaches 95.0%; ❌ if the upper bound is below it. Overall ✅ only if every level is ✅, ❌ if any level is ❌, else ⚠️ (also ⚠️ "not measured" without runs at ε_fp = 0.1). The steps cost (paired ε_fp − 0 on the same map, both missions successful, map as the unit), the fallback usage and the bumps are reported without a verdict: no threshold was fixed for them before the run.
+
+| agent | ε_fp | success (Wilson 95 % CI) | failures | Σ bumps | bumps per mission | missions with fallback | fallbacks per mission | steps (successful) |
+|---|---|---|---|---|---|---|---|---|
+| `search_andor` | 0 | 100.0% [99.5%, 100.0%] (800/800) | none | 760 | 0.95 [0.86, 1.04] (n = 800) | 0 | 0.00 [0.00, 0.00] (n = 800) | 40.88 [38.89, 42.86] (n = 800) |
+| `search_andor` | 0.05 | 100.0% [99.5%, 100.0%] (800/800) | none | 1399 | 1.75 [1.59, 1.91] (n = 800) | 147 | 0.32 [0.26, 0.37] (n = 800) | 71.79 [65.99, 77.58] (n = 800) |
+| `search_andor` | 0.1 | 100.0% [99.5%, 100.0%] (800/800) | none | 1688 | 2.11 [1.92, 2.30] (n = 800) | 266 | 0.84 [0.73, 0.95] (n = 800) | 87.41 [80.86, 93.95] (n = 800) |
+| `search_andor` | 0.2 | 100.0% [99.5%, 100.0%] (800/800) | none | 2874 | 3.59 [3.31, 3.87] (n = 800) | 412 | 2.27 [2.05, 2.50] (n = 800) | 110.26 [102.90, 117.62] (n = 800) |
+| `search_astar` | 0 | 100.0% [99.5%, 100.0%] (800/800) | none | 797 | 1.00 [0.90, 1.09] (n = 800) | 0 | 0.00 [0.00, 0.00] (n = 800) | 45.08 [42.97, 47.19] (n = 800) |
+| `search_astar` | 0.05 | 100.0% [99.5%, 100.0%] (800/800) | none | 1426 | 1.78 [1.62, 1.94] (n = 800) | 141 | 0.21 [0.18, 0.25] (n = 800) | 71.00 [65.50, 76.49] (n = 800) |
+| `search_astar` | 0.1 | 100.0% [99.5%, 100.0%] (800/800) | none | 1574 | 1.97 [1.80, 2.14] (n = 800) | 265 | 0.42 [0.37, 0.46] (n = 800) | 81.02 [75.30, 86.74] (n = 800) |
+| `search_astar` | 0.2 | 100.0% [99.5%, 100.0%] (800/800) | none | 2200 | 2.75 [2.54, 2.96] (n = 800) | 411 | 0.55 [0.51, 0.59] (n = 800) | 87.27 [81.91, 92.63] (n = 800) |
+
+Paired cost of false positives (each agent against itself at ε_fp = 0):
+
+| agent | ε_fp | steps(ε_fp) − steps(0), successful pairs (95 % CI) | bumps(ε_fp) − bumps(0), all pairs (95 % CI) |
+|---|---|---|---|
+| `search_andor` | 0.05 | +30.91 steps [+26.00, +35.82] over 800 maps (800 pairs), paired t p = 3.2e-32, Wilcoxon p = 3.4e-45 | +0.80 bumps [+0.67, +0.93] over 800 maps (800 pairs), paired t p = 2.3e-31, Wilcoxon p = 2.2e-33 |
+| `search_andor` | 0.1 | +46.53 steps [+40.79, +52.27] over 800 maps (800 pairs), paired t p = 1.1e-49, Wilcoxon p = 1.4e-72 | +1.16 bumps [+1.00, +1.32] over 800 maps (800 pairs), paired t p = 1.3e-40, Wilcoxon p = 8e-43 |
+| `search_andor` | 0.2 | +69.38 steps [+62.92, +75.85] over 800 maps (800 pairs), paired t p = 9.8e-79, Wilcoxon p = 1.9e-105 | +2.64 bumps [+2.39, +2.90] over 800 maps (800 pairs), paired t p = 4e-75, Wilcoxon p = 2.7e-75 |
+| `search_astar` | 0.05 | +25.92 steps [+21.24, +30.60] over 800 maps (800 pairs), paired t p = 9.4e-26, Wilcoxon p = 5.9e-39 | +0.79 bumps [+0.65, +0.92] over 800 maps (800 pairs), paired t p = 1.1e-28, Wilcoxon p = 5.5e-31 |
+| `search_astar` | 0.1 | +35.94 steps [+31.14, +40.75] over 800 maps (800 pairs), paired t p = 2.3e-43, Wilcoxon p = 7.6e-59 | +0.97 bumps [+0.82, +1.13] over 800 maps (800 pairs), paired t p = 4.7e-32, Wilcoxon p = 6.2e-33 |
+| `search_astar` | 0.2 | +42.19 steps [+37.51, +46.86] over 800 maps (800 pairs), paired t p = 1.8e-59, Wilcoxon p = 2.4e-81 | +1.75 bumps [+1.55, +1.95] over 800 maps (800 pairs), paired t p = 7.5e-57, Wilcoxon p = 4e-59 |
