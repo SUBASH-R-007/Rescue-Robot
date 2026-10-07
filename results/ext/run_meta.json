@@ -1,0 +1,27 @@
+{
+  "config_name": "ext",
+  "config_path": "experiments/ext.yaml",
+  "base_seed": 2026,
+  "n_maps": 200,
+  "agents": [
+    "search_andor",
+    "search_astar"
+  ],
+  "blocks": [
+    "search",
+    "multi",
+    "noisy"
+  ],
+  "n_tasks": 8000,
+  "n_tasks_total": 8000,
+  "max_tasks": null,
+  "n_runs": 14400,
+  "workers": 18,
+  "wall_time_s": 277.112,
+  "started_at": "2026-10-07T19:43:18+05:30",
+  "finished_at": "2026-10-07T19:47:55+05:30",
+  "date": "2026-10-07",
+  "git_commit": "762a944",
+  "python": "3.11.9",
+  "platform": "Windows-10-10.0.26200-SP0"
+}
