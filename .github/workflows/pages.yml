@@ -1,0 +1,74 @@
+# Build the browser app (python -m rescue.webapp, docs/webapp.md) and publish it on GitHub Pages.
+# One-time setup: repository Settings -> Pages -> Build and deployment -> Source: "GitHub Actions".
+# Nothing is published unless the checks pass: lint, the web app's Python tests and the
+# front end's Node tests run before the build. version.json records the numpy / scipy versions
+# that generated the map library (build_packages), so a changed generator is visible.
+name: Web app (GitHub Pages)
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# One deployment at a time; a newer push does not cancel a deployment in progress.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Set up Node.js (front-end tests)
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install the package
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: Lint
+        run: python -m ruff check .
+
+      - name: Test the web app
+        run: python -m pytest -q -m "not slow" tests/test_webapi.py tests/test_webapi_ui_contract.py tests/test_webapp_build.py
+
+      - name: Test the front end
+        run: node --test webapp/tests
+
+      - name: Build the static site
+        run: python -m rescue.webapp --build-only --out _site
+
+      - name: Upload the Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+  deploy:
+    needs: build
+    # Forks without Pages enabled skip the deployment instead of failing.
+    if: github.repository == 'SUBASH-R-007/Rescue-Robot'
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

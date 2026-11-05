@@ -43,9 +43,12 @@ MAPS_DIR = REPO_ROOT / "maps"
 MAP_GLOB = "*.txt"
 #: Sub-packages of ``rescue`` the simulator never imports (experiment harness, extensions).
 EXCLUDED_PACKAGE_DIRS: tuple[str, ...] = ("experiments", "ext")
-#: Modules of ``rescue`` (paths relative to the package) left out because they import an
-#: excluded package: the extension simulator (``sim --ext``, plan §3.15.3) needs ``rescue.ext``.
-EXCLUDED_MODULES: tuple[str, ...] = ("viz/ext_sim_app.py",)
+#: Modules of ``rescue`` (paths relative to the package) left out: the extension simulator
+#: (``sim --ext``, plan §3.15.3) needs ``rescue.ext``, and the Pyodide web app's bridge and build
+#: tool (plan §3.16; ``webapi`` imports ``rescue.ext``) are not part of the pygbag simulator.
+EXCLUDED_MODULES: tuple[str, ...] = (
+    "viz/ext_sim_app.py", "webapi.py", "webapp.py", "webmaps.py", "webtext.py",
+)
 #: Files and directories never copied.
 IGNORED_PATTERNS: tuple[str, ...] = ("__pycache__", "*.pyc", "*.pyo")
 #: Fonts copied from matplotlib's mpl-data/fonts/ttf (DejaVu: Bitstream Vera licence).

@@ -505,6 +505,12 @@ The rule is held in place in several ways:
   `run_async()`, which yields to asyncio once per frame. The pygbag browser build
   (`web/main.py`, `scripts/build_web.py`, [`web.md`](web.md)) therefore runs the same simulator
   code. Only recording is switched off there (`record.recording_available()`).
+* The web app ([`webapp.md`](webapp.md), plan §3.16) follows the same rule across a process
+  boundary: the browser UI (`webapp/js/`) only renders the JSON state that `rescue.webapi`
+  returns from a Pyodide Web Worker. The bridge drives the unchanged `runner.Mission` /
+  `ext.mission.ExtMission`, so the browser plays the same missions as the CLI.
+  `python -m rescue.webapp` packages the site (`rescue.zip`, `maps_library.json`,
+  `results.json`, `version.json`) and serves it on 127.0.0.1.
 
 ---
 

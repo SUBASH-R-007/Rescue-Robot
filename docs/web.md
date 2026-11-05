@@ -1,5 +1,9 @@
 # Browser demo (pygbag)
 
+> This page covers the pygbag build of the Pygame simulator. The mouse-first **web app**
+> (`python -m rescue.webapp`: Pyodide, plain-English explanations, map editor, comparison and
+> results) is described in [webapp.md](webapp.md).
+
 The interactive simulator also runs in a web browser (brief §6.7). The browser build runs the
 same code as `python -m rescue.sim --map maps/deck_demo.txt`: CPython 3.12 compiled to
 WebAssembly, pygame-ce and numpy, packed by [pygbag](https://pypi.org/project/pygbag/). It opens
@@ -32,8 +36,9 @@ The script stages `build/web_app/`, which `.gitignore` excludes like the rest of
 
 * `main.py`, copied from `web/main.py`;
 * `rescue/`, the package without `experiments/`, `ext/`, `viz/ext_sim_app.py` (the
-  extension simulator, which needs `ext/`) and `__pycache__`, which the simulator never
-  imports. `mapgen.py` is kept;
+  extension simulator, which needs `ext/`), the web app's modules (`webapi.py`, `webapp.py`,
+  `webmaps.py`, `webtext.py`; [webapp.md](webapp.md)) and `__pycache__`, which the simulator
+  never imports. `mapgen.py` is kept;
 * `maps/*.txt` and `fonts/` (the two DejaVu fonts and their licence).
 
 It then runs `python -m pygbag --build --width 1280 --height 800 --title "Rescue Robot

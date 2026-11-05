@@ -11,7 +11,6 @@ import numpy as np
 
 from rescue.config import EXT_MIN_SURVIVOR_SPACING, EXT_SCENARIO_STREAM_KEY
 from rescue.grid import Cell, Pos, TrueGrid, manhattan
-from rescue.mapgen import generate
 from rescue.planners.bfs import UNREACHABLE, bfs_distances
 
 __all__ = ["add_survivors", "multi_survivor_grid"]
@@ -89,6 +88,10 @@ def multi_survivor_grid(scenario: str, rows: int, cols: int, seed: int, k: int) 
 
     Deterministic in the arguments; ``k = 1`` returns the core map unchanged.
     """
+    # Imported here, not at module import: mapgen needs scipy, which the browser app
+    # (rescue.webapi, docs/plan.md §3.16) loads only on demand; add_survivors does not need it.
+    from rescue.mapgen import generate
+
     base = generate(scenario, rows, cols, seed)
     if int(k) == 1:
         return base

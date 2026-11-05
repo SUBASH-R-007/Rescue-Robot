@@ -406,3 +406,24 @@ EXT_FALLBACK_MAX_P: float = 0.999
 #: X6: false-positive rate at which ``search_andor``'s success (target
 #: ``EXT_CLAIM_SUCCESS_TARGET``) is checked, fixed before the full run.
 EXT_CLAIM_FP: float = 0.1
+
+# --- Web app (rescue.webapi / rescue.webapp / webapp/, docs/plan.md §3.16, docs/webapp.md) ----
+#: Pyodide release the browser app loads (``webapp/js/worker.js``, ``version.json``). Verified
+#: on the CDN (``.../v0.28.3/full/pyodide.mjs``); its lock file ships CPython 3.13.2 and
+#: numpy 2.2.5 (and scipy 1.14.1, loaded only on demand by the map generator / LAO*).
+WEB_PYODIDE_VERSION: str = "0.28.3"
+#: CDN folder of that release (``{version}`` is substituted).
+WEB_PYODIDE_CDN: str = "https://cdn.jsdelivr.net/pyodide/v{version}/full/"
+#: Python and numpy versions inside that Pyodide release (recorded in ``version.json``).
+WEB_PYODIDE_PYTHON: str = "3.13.2"
+WEB_PYODIDE_NUMPY: str = "2.2.5"
+#: three.js release the optional 3D map view loads (``webapp/js/render3d.js``, imported only
+#: when the view is switched on). Pinned like Pyodide: the import map in ``index.html`` carries
+#: a ``__THREE_VERSION__`` placeholder the build fills, and ``version.json`` records it.
+WEB_THREE_VERSION: str = "0.160.1"
+#: CDN folder of that release (``{version}`` is substituted).
+WEB_THREE_CDN: str = "https://cdn.jsdelivr.net/npm/three@{version}/"
+#: ``python -m rescue.webapp``: address and port of the local server. 127.0.0.1, not
+#: ``localhost`` (docs/web.md: some loaders treat ``localhost:8…`` as their own test server).
+WEB_DEFAULT_HOST: str = "127.0.0.1"
+WEB_DEFAULT_PORT: int = 8000

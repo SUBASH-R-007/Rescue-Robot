@@ -20,8 +20,33 @@ Chennai. **Team:** Srithan Saravanan (240701532), Subash R (240701538).
 
 ---
 
+## Web app
+
+Try the project in a browser, with the mouse, no Pygame window needed:
+
+```bash
+python -m rescue.webapp        # builds build/webapp/, serves http://127.0.0.1:8000/ and opens it
+```
+
+The web app runs **the same Python core** in the browser through
+[Pyodide](https://pyodide.org) (CPython compiled to WebAssembly, in a Web Worker), so a seed
+gives the same map and the same mission as on the command line. You can step or play a
+mission and scrub back through it, read a plain-English explanation of every step (what the
+robot tried, what happened, how the agent reacted and why), fold the AND-OR plan tree, edit
+maps by clicking, compare agents side by side, and browse the verdicts and plots of the
+committed experiment reports. The **3D view** toggle (or `D`) shows the same mission as a
+rover driving the site, with the unscanned ground lifting as the sensor reaches it; it works
+on any map, including one you draw in the editor. The site is static: `--build-only --out DIR` writes it for any
+static host, and `.github/workflows/pages.yml` publishes it on GitHub Pages once Pages is set
+to *GitHub Actions*. The first page load downloads Pyodide (about 8.5 MB compressed) from its CDN.
+[`docs/webapp.md`](docs/webapp.md) covers the options, how it works, deployment and the
+limitations.
+
+---
+
 ## Contents
 
+- [Web app](#web-app)
 - [What it does](#what-it-does)
 - [Quick start](#quick-start)
 - [Commands](#commands)
@@ -506,6 +531,8 @@ Rescue-Robot/
 │   ├── runs.py             run files (JSON) for replay
 │   ├── mapgen.py           scenario generators and their CLI
 │   ├── demo.py, sim.py, compare.py, replay.py, cli_utils.py   command-line entry points
+│   ├── webapi.py           JSON bridge of the web app (WebSession, catalog, map editing)
+│   ├── webapp.py           python -m rescue.webapp: build the static site and serve it
 │   ├── viz/                Pygame UI: renders StepEvents, contains no planning logic
 │   ├── experiments/        Monte Carlo harness: run, stats, hypotheses, plots
 │   └── ext/                extensions (brief §8.3–§8.5): noisy sensing, search agents,
@@ -525,11 +552,15 @@ Rescue-Robot/
 │   ├── results.md          results chapter
 │   ├── extensions.md       extensions chapter (brief §8.3–§8.5, incl. two-sided noise)
 │   ├── web.md              browser demo (pygbag): build, serve, publish, limitations
+│   ├── webapp.md           web app (Pyodide): run, how it works, GitHub Pages
 │   └── figures/            GIF and screenshots
 ├── scripts/make_figures.py regenerates the simulator figures in docs/figures/
 ├── scripts/make_ext_figures.py  the extension-simulator figures (docs/figures/ext_*.png)
 ├── scripts/build_web.py    stages build/web_app/ and builds the browser demo with pygbag
 ├── web/main.py             browser entry point (asyncio loop of the simulator)
+├── webapp/                 web app front end (index.html, css/, js/ ES modules, tests/)
+├── scripts/build_webapp.py  wrapper of python -m rescue.webapp
+├── .github/workflows/pages.yml  builds the web app and deploys it to GitHub Pages
 ├── CLAUDE.md               contributor conventions and commands
 ├── pyproject.toml          package metadata, dependencies, pytest / ruff / coverage settings
 └── LICENSE

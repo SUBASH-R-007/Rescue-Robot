@@ -40,6 +40,7 @@ rescue-sim = "rescue.sim:main"
 rescue-compare = "rescue.compare:main"
 rescue-replay = "rescue.replay:main"
 rescue-experiments = "rescue.experiments.__main__:main"
+rescue-webapp = "rescue.webapp:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

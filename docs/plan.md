@@ -19,7 +19,7 @@ As built (Phase 7); git-ignored outputs are marked *(ignored)*.
 
 ```
 pyproject.toml           package + extras [dev] / [video] (imageio-ffmpeg) / [web] (pygbag), console scripts
-                         rescue-{demo,sim,compare,replay,experiments}, ruff / pytest / coverage
+                         rescue-{demo,sim,compare,replay,experiments,webapp}, ruff / pytest / coverage
 README.md LICENSE CLAUDE.md .pre-commit-config.yaml .gitignore
 src/rescue/
   __init__.py            version, re-exports nothing heavy
@@ -58,6 +58,9 @@ src/rescue/
   mapgen.py              scenario generators with solvability guarantee, SCENARIOS registry,
                          `python -m rescue.mapgen` (§3.12)
   demo.py                `python -m rescue.demo`
+  webapi.py              JSON bridge of the web app: catalog, WebSession, edit_map,
+                         validate_map (pure Python, no pygame/matplotlib/yaml; §3.16)
+  webapp.py              `python -m rescue.webapp`: build the static web app, serve it (§3.16)
   sim.py compare.py replay.py   thin CLI entry points → viz apps
   viz/  __init__.py theme.py grid_view.py tree_view.py panel.py sim_app.py compare_app.py
         replay_app.py record.py export.py (plan-tree PNG via matplotlib)          (§3.11)
@@ -69,10 +72,16 @@ src/rescue/
 scripts/make_figures.py  regenerates the simulator figures in docs/figures/ headless (§3.11)
 scripts/make_ext_figures.py  docs/figures/ext_{search,multi,noisy}.png (extension sim, §3.15.3)
 scripts/build_web.py     stages build/web_app/ (main.py, rescue/ without experiments/ ext/ and
-                         viz/ext_sim_app.py, maps,
+                         viz/ext_sim_app.py and the web app modules web{api,app,maps,text}.py, maps,
                          DejaVu fonts + licence) and runs pygbag --build (brief §6.7, docs/web.md)
 web/main.py              pygbag entry point: asyncio.run(main()) → SimApp(...).run_async()
-build/                   web_app/ staging folder and pygbag output build/web/ *(ignored)*
+webapp/                  web app front end: index.html css/app.css js/*.js (ES modules, no
+                         build step, no npm dependencies) tests/ (node --test)       (§3.16)
+                         js/render3d.js: optional three.js view of the same state   (§3.16.1)
+scripts/build_webapp.py  wrapper of `python -m rescue.webapp`                         (§3.16)
+.github/workflows/pages.yml  builds the web app (--build-only --out _site) and deploys it
+                         to GitHub Pages on push to main                              (§3.16)
+build/                   web_app/ (pygbag) and webapp/ (python -m rescue.webapp) *(ignored)*
 maps/   deck_demo.txt deck_figure.txt (the deck's maps) + mapgen samples rubble_01.txt
         building_01.txt flooded_01.txt maze_01.txt (each header = the command that regenerates it)
 experiments/ main.yaml (full run) quick.yaml (--quick) ext.yaml ext_quick.yaml (§3.14)
@@ -90,8 +99,9 @@ tests/  conftest.py helpers_maps.py helpers_phase2.py and test_{config,grid,mode
         test_ext.py test_ext_core_hooks.py test_ext_experiments.py (§3.14), test_lao.py
         test_lao_report.py (§3.15.1), test_ext_fp.py (§3.15.2), test_ext_viz.py (§3.15.3),
         test_web.py (browser build: run_async, fonts, staging; docs/web.md)
+        test_webapp_build.py (web app build, zip, results.json, server; §3.16)
 docs/   brief.md (original specification) plan.md architecture.md algorithm.md results.md
-        web.md (browser demo)
+        web.md (browser demo) webapp.md (web app, §3.16)
         figures/ deck_demo.gif sim_deck_demo.png sim_deck_figure.png plan_tree_deck_demo.png
                  compare_collapsed_building.png
                  ext_search.png ext_multi.png ext_noisy.png (make_ext_figures.py, §3.15.3)
@@ -1485,6 +1495,238 @@ whose frontier target is ≥ 3 cells away, policy arrows on: t = 57, target (10,
 `ext_noisy.png` (just after the 3rd bump: t = 18, P(debris) hatch + legend), with the
 node count in place of "Plan ms" and a 450 ms clock advance before each capture (as
 `make_figures.py`), so the files are deterministic. Tests: `tests/test_ext_viz.py`.
+
+### 3.16 Web app (`webapi.py`, `webapp.py`, `webapp/`, docs/webapp.md)
+
+A static web app whose simulation runs the **exact** Python core in the browser via Pyodide
+(single source of truth: same seeds ⇒ same missions as the CLI), with a mouse-first UI. The
+Pygame app and its pygbag build (docs/web.md) are unchanged, and no core behaviour changes
+(rule zero). One import moved: `ext/scenarios.py` imports `mapgen` inside
+`multi_survivor_grid` instead of at module level, so `rescue.ext` imports without scipy.
+
+**Runtime.** three.js is pinned by `config.WEB_THREE_VERSION` = 0.160.1 (CDN folder
+`config.WEB_THREE_CDN`); `index.html` carries an import map whose `__THREE_VERSION__`
+placeholder the build fills, like `__PYODIDE_VERSION__`, and `version.json` records `three` /
+`three_url` (tests check both). Pyodide pinned by `config.WEB_PYODIDE_VERSION` = 0.28.3 (CDN folder
+`config.WEB_PYODIDE_CDN` = `https://cdn.jsdelivr.net/pyodide/v{version}/full/`; its
+`pyodide-lock.json` ships CPython 3.13.2 = `WEB_PYODIDE_PYTHON`, numpy 2.2.5 =
+`WEB_PYODIDE_NUMPY`, and scipy 1.14.1, loaded on demand). Pyodide runs in a module Web Worker
+(`webapp/js/worker.js`): it reads `version.json` (its fallback constant equals the pin; a test
+checks it), loads Pyodide and numpy, unpacks `rescue.zip` into `/home/pyodide/app`, puts that
+on `sys.path` and imports `rescue.webapi`. RPC: `{id, method, params}` → `{id, ok, result}` or
+`{id, ok: false, error: {type, message, details}}` (`webapi.dispatch` method names), plus
+`{progress, detail}` messages while loading. Before `open` / `map_ascii` the worker asks
+`needs_scipy` and loads scipy first ("Loading the map generator…"); a `No module named
+'scipy'` error also loads it once and retries.
+
+```
+# webapi.py — pure Python; imports without pygame / matplotlib / scipy / yaml (mapgen and
+# lao_star are imported lazily, only when needed)
+API_VERSION = 1
+catalog() -> dict            # maps (bundled files: name, title, description, rows, cols),
+                             # scenarios (name, title, description, sizes), agents (name, label,
+                             # description, kind 'contingency'|'path'|'expected', modes,
+                             # needs_scipy), modes core/search/multi/noisy, parameter ranges and
+                             # defaults from config.py, presets ('Slide 9 demo' = deck_demo +
+                             # andor + DEMO_SEED, 'Planners head-to-head', 'Hidden survivor',
+                             # 'Several survivors', 'Noisy sensors', 'Blank canvas')
+WebSession(config: dict)     # keys: mode, map {source:'file',name} | {source:'scenario',
+                             # scenario,rows,cols,seed} | {source:'ascii',text}, agent, seed
+                             # (default DEMO_SEED for deck_demo, else the map seed), slip_p,
+                             # sensor_radius, replan_mode, aftershock_q, aftershock_k, k,
+                             # false_negative, false_positive. Wraps runner.Mission ('core') or
+                             # ext.mission.ExtMission (other modes) exactly as the CLI builds them.
+  .state() -> dict           # JSON-safe (lists, no tuples / numpy / NaN)
+  .step() -> {event, explanation, state}
+  .run(max_steps) -> {events, state}
+  .state_at(t) -> dict       # 0 ≤ t ≤ current t, from recorded data; equals the live state at t
+  .done
+edit_map(ascii, op) -> {ascii, warnings, solvable}   # toggle_debris, set_start, set_survivor,
+                             # add_survivor, remove_survivor, toggle_high_slip, resize, clear
+validate_map(ascii) -> {ok, errors, warnings}
+```
+
+State JSON (0-indexed `[r, c]`; the UI always displays 1-indexed): `api, t, status
+('running'|'rescued'|'aborted'|'budget'|'unreachable'), mode, rows, cols, cells` (true grid
+codes, for the true-map toggle), `belief, p_debris` (floats or null), `high_slip, robot,
+start, survivors, rescued, target, trace` (`{t, from, to, action, outcome, blocked, bump}`),
+`policy` (`{'r,c': 'E'}`), `envelope, plan` (`{id, pretty, tree}`: `plan.to_tree`, depth 8,
+texts 1-indexed) or null, `path` (A\* agents) or null, `metrics, budget, log` (`{t, kind,
+text}`, the Pygame app's wording), `explanation` (plain-English sentences about the last step:
+what the robot tried, what happened, how this agent reacted and why), `agent {name, label,
+kind}`.
+Also in the state: `frame` (event index; an agent abort records a second event at the same
+`t`, and `state_at(t)` returns the later one), `done`, `survivors_known`, `target_mode`
+(`'explore'|'rescue'` or null), `plan_id`, `plan_message` (the Pygame "No plan: …" text or
+null), `panel` (the Pygame info panel as `[label, value]` pairs), `event` (the last
+`StepEvent` / `ExtStepEvent`, positions 0-indexed), `seed`, `scenario` and the normalized
+`config`; `plan` also carries `t, made_at, stats, expected_steps`; trace entries also carry
+`replanned` and `rescued`. Extra API (all JSON-safe): `normalize_config(config)`,
+`needs_scipy(config) -> {scipy, reasons}`, `map_ascii(spec, mode)`, `WebSession.report()`
+(the CLI texts: map, initial plan, deck trace, summary) and `dispatch(json) -> json`
+(`{"method", "params"}` → `{"ok": true, "result"}` | `{"ok": false, "error": {type, message,
+details}}`; methods version, catalog, needs_scipy, normalize_config, map_ascii, open (→ `{id,
+state}`, at most `WEB_MAX_SESSIONS` kept), step, run, state, state_at, report, close, edit_map,
+validate_map, load_map_library). `edit_map` also accepts `paint {cell, value '.'|'#'|'~'}`
+(drag painting) and returns `{ascii, changed, warnings, errors, valid, solvable, rows, cols}`;
+`validate_map(ascii, mode='core')` returns `{ok, errors, warnings, rows, cols, survivors,
+solvable}` (core needs exactly one survivor; an unreachable survivor is a warning, not an
+error). Map library (`rescue.webmaps`): `build_map_library()` / `write_map_library(path)` for
+the build, sizes `LIBRARY_SIZES` = (10, 12, 15, 20) (12 = the extension demo's) × seeds 0..29;
+`generated_grid()` uses it and imports `mapgen` only for a miss. Multi-survivor maps need no
+library of their own: `add_survivors(library grid, map seed, k)` equals
+`multi_survivor_grid` (tested), and `add_survivors` needs no scipy. Texts:
+`rescue.webtext` (log lines in the Pygame wording, tested against `viz` line for line;
+explanations). Tests: `tests/test_webapi.py` (fidelity against directly built missions,
+JSON / indexing, `state_at` properties, explanations, editing, library, import blocker,
+20x20 AND-OR median step < 50 ms: best of several identical replays, as `test_viz` does
+under xdist), `tests/test_webapi_viz.py` (log wording against the Pygame apps).
+
+**Front end** (`webapp/`): static, no build step, no npm dependencies; vanilla ES modules and
+CSS, system fonts, inline SVG icons; design tokens as CSS custom properties with light, dark
+and high-contrast themes (`data-theme`, remembered in `localStorage`), `prefers-reduced-motion`
+honoured, 1280×800 down to tablet (768) and phone (390, stacked layout).
+
+```
+index.html     loading screen (Starting Python… / Loading numpy… / Loading the rescue robot…),
+               header (view tabs, theme, help), the Simulate view, dialogs (welcome with the
+               preset cards, help with the shortcuts, plot lightbox), tour layer, icon sprite
+js/main.js     boot, views (lazy imports), presets (compare_agents → Compare, edit → editor),
+               theme, help, keyboard: Space play/pause, N/→ step, B/← back, Home/End, R reset,
+               T true map, P plan arrows, ? help, Esc closes; 1–6 pick an editor tool
+js/worker.js   Pyodide worker (above)       js/bridge.js  promise RPC; ?mock=1 → js/mock.js
+js/session.js  MissionSession: start / forward (replays recorded steps, else webapi step) /
+               seek(t) via state_at / finish (run) / dispose; serialised calls; state cache
+js/render.js   MapRenderer: canvas at devicePixelRatio (integer backing store, snapped grid
+               lines, re-sized on ResizeObserver and DPR change); fog '?', hatched debris,
+               water waves, P(debris) shading (log scale), true-map overlay (dashed outline:
+               hidden debris / phantom), policy arrows, A* path, trace with colour AND glyph
+               per outcome (line = moved, ↺ = slipped with ×n, dashed + ▲ = skid, bar = blocked,
+               ✕ = bump), start, target flag, survivors with rescued ticks, robot glide
+js/render3d.js Renderer3D: the same five calls as MapRenderer, drawn with three.js (§3.16.1);
+               imported only when the 3D toggle is first used
+js/timeline.js scrubber (pointer drag, keyboard slider) with ticks: slip ● amber, skid ▲ red,
+               bump ✕, replan ◆ purple, found ★, rescue ✓ green, failure ■
+js/panels.js   side tabs: What happened (explanation sentences + clickable event log; while
+               replaying it lists the later recorded events too, dimmed), Plan
+               (plantree.js: folding tree, current node highlighted and kept in view, hover →
+               cell highlight; A* path chips; policy note), Numbers (metric cards, definitions
+               in tooltips), Settings (mode, map, size, map seed, agent cards, slip p with the
+               outcome split, sensor radius, replan mode, aftershocks, k, noise, luck seed; each
+               with an (i) tip; a change restarts the mission with a note; a mode switch resets
+               k / noise to the new mode's defaults, the core mode takes none); always-visible legend
+               painted by the renderer itself
+js/compare.js  2–3 panes, same config with the agent replaced, lock-step play, status badges,
+               metrics table (★ best among the rescued, once all are done), one-sentence summary,
+               the mode named when it is not the core one
+js/editor.js   tools (debris, eraser, water, start, survivor, extra survivor), drag painting
+               (Bresenham), local preview (mapcore.js) confirmed by webapi.edit_map, undo,
+               resize, clear, load a bundled / generated / the Simulate map, ASCII text form,
+               Check map (validate_map), Use this map (several survivors → mode multi)
+js/results.js  claim cards from results.json (plain-language question, verdict icon + label,
+               key number, full Markdown details), honest findings (every refuted / inconclusive
+               claim with its report's "Why" paragraph and the paragraphs that refer to it), plots
+js/learn.js    static lessons with inline SVG: problem, slip/skid split (0.80/0.15/0.025/0.025
+               at p = 0.2), the deck's root plan tree, agent reactions table, extensions, figures
+js/tour.js     6-step spotlight tour (map, controls, timeline, explanation, plan, settings)
+js/{format,geometry,mapcore,ui}.js  pure helpers (1-indexed formatting, layout / hit tests /
+               DPR math, ASCII map ops) and DOM helpers (icons, toasts, tooltips, dialogs)
+```
+
+Errors from Python become toasts with the traceback under *Technical details*. `?mock=1`
+replays the recorded missions of `webapp/tests/fixtures/missions.json` (only when `webapp/`
+itself is served; fixtures are not published). `webapp/tests/*.test.mjs` hold the unit tests
+(`node --test webapp/tests`, through `webapp/tests/index.js`, or
+`node --test "webapp/tests/*.test.mjs"`: formatting, geometry, timeline mapping, plan-tree
+flattening, map ops, the session over recorded missions, compare / results / tour helpers);
+pytest runs them when Node.js is installed; they are never copied into the site.
+
+#### 3.16.1 The 3D view (`webapp/js/render3d.js`)
+
+An optional second renderer of the **same state object** `render.js` draws: no new bridge
+call, no new Python. `SimView` holds both and routes through `_paint` / `_setOptions`, so the
+toggle (button `tg-3d`, key `D`) only swaps which canvas is on screen; `sim-canvas-3d` sits in
+the same `.canvas-box` and is switched with `hidden`.
+
+```js
+class Renderer3D {                       // the subset of MapRenderer the views use
+  constructor(canvas, { interactive = true })
+  setState(state, { animate = false, prev = null })   // animate = glide along the last trace step
+  setOptions({ showTrue, showPolicy, highlight })
+  resize(); destroy(); refreshTheme()
+}
+export function mapKey(state)            // scene identity: a change rebuilds the map
+export function stepPose(entry, p)       // rover pose p of the way through one trace step
+export function jitter(seed)             // deterministic per-cell rubble
+```
+
+* The scene is rebuilt only when `mapKey` changes (rows, cols, cells, high_slip), so stepping,
+  seeking and a settings change that keeps the map are updates, not rebuilds.
+* Floor tiles, rubble chunks, the unscanned blocks, the four trace marks and the policy arrows
+  are `InstancedMesh`es (one draw call each), so a 30×30 map is 900 cells without 900 objects.
+  Per-instance opacity is not available, so a sensed cell's block **sinks and flattens** over
+  `FOG_FADE_MS` instead of fading; with the true map shown the whole mesh drops to
+  `FOG_OPACITY_TRUE`.
+* Colours come from the same CSS tokens as `render.js` (`map-floor`, `map-fog`, `c-ok`, …),
+  re-read on the `rr-theme` event, so light, dark and high contrast all work. `--map-fog` is
+  mixed toward `--map-fog-ink`: a flat fill that is nearly black reads as a hole once it is lit.
+* The trace keeps the 2D glyph language (bar moved, ring slipped, arrow skidded, diamond
+  replanned) and reuses `render.js`'s `attemptedDir` and `probLevel`, so the two views cannot
+  drift apart. Search / multi / noisy modes get the target flag, rescued rings and the
+  P(debris) tint from the same state keys.
+* Not covered: cell hover (no picking), rulers, the A\* path, and the Compare and editor views.
+  The flat map stays the default and is what every other view uses.
+
+**Build and serve** (`webapp.py`):
+
+```
+# python -m rescue.webapp [--out build/webapp] [--port 8000] [--host 127.0.0.1] [--no-open]
+#                         [--build-only | --skip-build]
+# build_site(out_dir, *, source_dir=webapp/, repo_root, library=None, log=None) -> BuildReport
+#   out_dir is emptied only if it is empty or an earlier build (holds version.json); any other
+#   non-empty directory → FileExistsError (CLI exit 2). Missing webapp/index.html →
+#   FileNotFoundError (exit 2).
+#   1. copy webapp/ (minus tests/, node_modules, caches); fill __PYODIDE_VERSION__ /
+#      __APP_VERSION__ placeholders in .html/.js/.mjs/.css (optional for the front end)
+#   2. maps_library.json = webmaps.build_map_library(): {"version": 1, "scenarios", "sizes":
+#      [10, 12, 15, 20], "seeds": [0..29], "maps": {"<scenario>/<n>x<n>/<seed>":
+#      mapgen.generate(scenario, n, n, seed).to_ascii()}} for the generated scenarios
+#      (webmaps.LIBRARY_SIZES × LIBRARY_SEEDS, ≈ 130 KB); webmaps.get_map_library() finds it
+#      in the working directory (the worker chdirs into the unpacked zip)
+#   3. rescue.zip: rescue/**/*.py minus viz/, experiments/, ext/{experiments,claims,plots,
+#      demo}.py, sim.py compare.py replay.py webapp.py (demo.py stays: webapi reuses its
+#      format_map / initial_plan_text); plus maps/*.txt and
+#      maps_library.json at the zip root; sorted entries with fixed 1980-01-01 timestamps
+#      (byte-reproducible). ValueError if a packed module imports pygame, matplotlib or imageio.
+#   4. results.json: {"format": 1, "verdicts", "reports": [{id, title, heading, source,
+#      command, descriptive, meta, intro, claims: [{id, claim, verdict ('supported'|'refuted'|
+#      'inconclusive'|'descriptive'), symbol, measured, details}], tables, counts}], "plots",
+#      "figures": [{id, group, src (site path under assets/results/ or assets/figures/),
+#      source, title, caption, doc, section}]}. Reports: results/HYPOTHESES.md (H1–H7) and
+#      results/ext/EXTENSIONS.md (X1–X6): the '## Claims' table, each claim's '### <id>.'
+#      section as details; results/lao/LAO.md (descriptive): every '## ' section's tables, and
+#      the rows of its plan-quality table as findings LAO1, LAO2 with verdict 'descriptive'.
+#      Captions: the image's alt text in docs/results.md, docs/extensions.md or README.md and
+#      the prose paragraph after it (≤ 420 characters).
+#   5. version.json: {app, version, api, commit ($GITHUB_SHA or git rev-parse --short HEAD),
+#      dirty, built_at ($SOURCE_DATE_EPOCH honoured), pyodide, pyodide_url, python, numpy,
+#      zip, maps_library, results}; .nojekyll
+# serve: http.server (ThreadingHTTPServer) bound to 127.0.0.1 (not localhost, docs/web.md),
+#   text/javascript for .js/.mjs, application/wasm, application/zip, Cache-Control: no-cache;
+#   prints "Serving <dir> at http://127.0.0.1:<port>/" and opens the browser unless --no-open.
+```
+
+**Deployment**: `.github/workflows/pages.yml` (push to main, or manual): checkout,
+setup-python 3.11, `pip install -e .`, `python -m rescue.webapp --build-only --out _site`,
+`actions/upload-pages-artifact`, `actions/deploy-pages`; permissions `contents: read`,
+`pages: write`, `id-token: write`. Nothing deploys until the repository's Pages source is set
+to *GitHub Actions*.
+
+**Tests**: `tests/test_webapp_build.py`: build into tmp; zip contents and import scan; the
+unpacked zip imports in a fresh interpreter with pygame / matplotlib / scipy / yaml / imageio
+blocked, and a deck_demo `WebSession` reproduces the `rescue.demo` trace; results.json
+against the reports; version.json; the server and the CLI answer HTTP 200 on an ephemeral
+127.0.0.1 port; `node --test webapp/tests` when Node.js is available.
 
 ---
 
